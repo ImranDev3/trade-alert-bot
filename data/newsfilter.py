@@ -1,0 +1,113 @@
+"""Importance filtering for crypto news headlines.
+
+A headline is considered "important" when it mentions a high-signal topic
+(regulatory action, big money, hacks, market shocks, key events) **or** a
+symbol the user is actively watching. :func:`filter_important` keeps only the
+articles that score above a configurable threshold for a given user's
+watchlist, so the auto-drop only surfaces headlines that actually matter.
+
+Both signals are free and key-less — pure keyword/symbol matching.
+"""
+
+from __future__ import annotations
+
+import re
+
+from data.news import Article
+
+# High-signal topic keywords. Matched case-insensitively as whole words.
+# Each tuple is (regex pattern, weight). Weights make rare/blocker words score
+# higher so a headline like "SEC approves Bitcoin ETF" outranks "small dip".
+_IMPORTANT_KEYWORDS: list[tuple[str, int]] = [
+    # Regulation / legal (blockers — usually move markets hard)
+    (r"\bSEC\b", 3), (r"\bregulat", 2), (r"\bban\b", 3), (r"\blawsuit\b", 2),
+    (r"\bsanction", 3), (r"\bapprov", 3), (r"\bruling\b", 2), (r"\bDOJ\b", 2),
+    # Big money / milestones
+    (r"\bbillion\b", 2), (r"\btrillion\b", 3), (r"\ball[-\s]?time high\b", 3),
+    (r"\bATH\b", 2), (r"\brecord\b", 1), (r"\binflow", 2), (r"\boutflow", 2),
+    # Market shocks
+    (r"\bcrash", 3), (r"\bplunge", 3), (r"\bsurge", 2), (r"\brally\b", 2),
+    (r"\bpump\b", 1), (r"\bdump\b", 2), (r"\bselloff\b", 2), (r"\bliquidat", 2),
+    # Security
+    (r"\bhack", 3), (r"\bexploit\b", 3), (r"\bbreach\b", 2), (r"\bdrain", 3),
+    (r"\bdefect\b", 1), (r"\bvulnerab", 2),
+    # Key events
+    (r"\bETF\b", 3), (r"\bhalving\b", 3), (r"\bairdrop\b", 2),
+    (r"\bpartnership\b", 2), (r"\blisting\b", 2), (r"\blaunch", 2),
+    (r"\bupgrade\b", 2), (r"\bfork\b", 2), (r"\bintegrat", 2),
+    (r"\bacquisit", 2), (r"\bmerger\b", 2),
+]
+
+# Default minimum score for a headline to be "important" via keywords alone.
+DEFAULT_KEYWORD_THRESHOLD = 2
+
+_COMPILED = [(re.compile(pat, re.IGNORECASE), w) for pat, w in _IMPORTANT_KEYWORDS]
+
+
+def _symbol_terms(symbols: list[str]) -> list[str]:
+    """Turn normalized symbols (BTCUSDT, EURUSD) into matchable base terms.
+
+    BTCUSDT -> "BTC", ETHUSDT -> "ETH", EURUSD -> "EUR", SOLBTC -> "SOL".
+    Only the base currency is kept — that's what news headlines actually print.
+    """
+    from data.symbols import parse_symbol
+
+    terms: list[str] = []
+    for sym in symbols:
+        parsed = parse_symbol(sym)
+        if parsed and parsed.base:
+            terms.append(parsed.base.upper())
+    return terms
+
+
+def keyword_score(title: str) -> int:
+    """Sum of matched important-keyword weights in *title*."""
+    if not title:
+        return 0
+    score = 0
+    for pattern, weight in _COMPILED:
+        if pattern.search(title):
+            score += weight
+    return score
+
+
+def matches_watchlist(title: str, symbols: list[str]) -> bool:
+    """True when *title* mentions the base of any of *symbols* as a word."""
+    terms = _symbol_terms(symbols)
+    if not terms:
+        return False
+    for term in terms:
+        if re.search(rf"\b{re.escape(term)}\b", title, re.IGNORECASE):
+            return True
+    return False
+
+
+def is_important(
+    article: Article,
+    watchlist_symbols: list[str] | None = None,
+    keyword_threshold: int = DEFAULT_KEYWORD_THRESHOLD,
+) -> bool:
+    """Decide if *article* is important for a user with the given watchlist.
+
+    Important when either:
+    * its keyword score meets *keyword_threshold*, **or**
+    * it mentions one of the user's watched symbols' base currency.
+    """
+    title = article.title or ""
+    if keyword_score(title) >= keyword_threshold:
+        return True
+    if watchlist_symbols and matches_watchlist(title, watchlist_symbols):
+        return True
+    return False
+
+
+def filter_important(
+    articles: list[Article],
+    watchlist_symbols: list[str] | None = None,
+    keyword_threshold: int = DEFAULT_KEYWORD_THRESHOLD,
+) -> list[Article]:
+    """Keep only the articles :func:`is_important` flags for this watchlist."""
+    return [
+        a for a in articles
+        if is_important(a, watchlist_symbols, keyword_threshold)
+    ]
