@@ -19,8 +19,9 @@ from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.alerts import AlertStore, Direction
 from bot.util import format_price, kind_emoji, symbol_label
+from bot.watchlist import WatchlistStore
 from config import settings
-from data.fetcher import PriceError, fetch_price
+from data.fetcher import PriceError, fetch_price, fetch_price_or_none
 from data.symbols import parse_symbol
 
 log = logging.getLogger(__name__)
@@ -30,19 +31,25 @@ Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
 HELP_TEXT = (
     "🤖 <b>trade-alert-bot</b>\n"
-    "Crypto &amp; forex price alerts, straight to your chat.\n\n"
+    "Realtime crypto &amp; forex alerts, straight to your chat.\n\n"
     "<b>Commands</b>\n"
     "/price &lt;SYMBOL&gt; — current price  (e.g. /price BTCUSDT)\n"
-    "/alert &lt;SYMBOL&gt; &lt;above|below&gt; &lt;PRICE&gt; — create an alert\n"
+    "/alert &lt;SYMBOL&gt; &lt;above|below&gt; &lt;PRICE&gt; — price-level alert\n"
     "/alerts — list your active alerts\n"
-    "/remove &lt;ID&gt; — remove an alert\n"
+    "/remove &lt;ID&gt; — remove an alert\n\n"
+    "/watch &lt;SYMBOL&gt; — add a symbol to your watchlist\n"
+    "/unwatch &lt;SYMBOL&gt; — remove from watchlist\n"
+    "/watchlist — show your watchlist with live prices\n"
+    "/clearwatch — empty your watchlist\n"
+    "/summary — send your watchlist summary now\n"
     "/help — show this message\n\n"
     "<b>Supported markets</b>\n"
     "🪙 Crypto via Binance (e.g. BTCUSDT, ETHUSDT, SOLBTC)\n"
-    "💱 Forex via ECB rates (e.g. EURUSD, GBPJPY, USDINR)\n\n"
+    "💱 Forex via Yahoo (e.g. EURUSD, GBPJPY, USDINR)\n\n"
     "<b>Examples</b>\n"
     "<code>/alert BTCUSDT above 70000</code>\n"
-    "<code>/alert EURUSD below 1.10</code>"
+    "<code>/alert EURUSD below 1.10</code>\n"
+    "<code>/watch BTCUSDT ETHUSDT EURUSD</code>"
 )
 
 START_TEXT = (
@@ -81,8 +88,8 @@ def _auth_only(func: Handler) -> Handler:
     return wrapper
 
 
-def build_handlers(store: AlertStore) -> list:
-    """Return the list of handlers to register, closing over *store*."""
+def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
+    """Return the list of handlers to register, closing over *store* and *watchlist*."""
 
     @_auth_only
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -181,6 +188,49 @@ def build_handlers(store: AlertStore) -> list:
             await _reply(update, f"❌ No alert #{alert_id} found that belongs to you.")
 
     @_auth_only
+    async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not context.args:
+            await _reply(update, "Usage: <code>/watch &lt;SYMBOL&gt; [SYMBOL ...]</code>\nExample: <code>/watch BTCUSDT ETHUSDT EURUSD</code>")
+            return
+        added, skipped = [], []
+        for raw in context.args:
+            ok, msg = watchlist.add(update.effective_user.id, raw)
+            (added if ok else skipped).append(msg)
+        lines = ["\n".join(added)] if added else []
+        if skipped:
+            lines.append("\n".join(skipped))
+        await _reply(update, "\n".join(lines))
+
+    @_auth_only
+    async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not context.args:
+            await _reply(update, "Usage: <code>/unwatch &lt;SYMBOL&gt;</code>")
+            return
+        ok, msg = watchlist.remove(update.effective_user.id, context.args[0])
+        await _reply(update, msg)
+
+    @_auth_only
+    async def watchlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        symbols = watchlist.get(update.effective_user.id)
+        if not symbols:
+            await _reply(update, "📭 Your watchlist is empty.\nAdd symbols with /watch")
+            return
+        lines = [f"👀 <b>Your watchlist ({len(symbols)})</b>"]
+        for sym in symbols:
+            price = fetch_price_or_none(parse_symbol(sym))
+            price_str = format_price(price) if price is not None else "—"
+            lines.append(f"{kind_emoji(sym)} <b>{symbol_label(sym)}</b>  <code>{price_str}</code>")
+        await _reply(update, "\n".join(lines))
+
+    @_auth_only
+    async def clearwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        n = watchlist.clear(update.effective_user.id)
+        if n:
+            await _reply(update, f"🗑️ Cleared your watchlist ({n} symbol removed).")
+        else:
+            await _reply(update, "📭 Your watchlist was already empty.")
+
+    @_auth_only
     async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _reply(update, "🤔 I didn't understand that. Send /help to see what I can do.")
 
@@ -191,5 +241,9 @@ def build_handlers(store: AlertStore) -> list:
         CommandHandler("alert", alert),
         CommandHandler("alerts", alerts),
         CommandHandler("remove", remove),
+        CommandHandler("watch", watch),
+        CommandHandler("unwatch", unwatch),
+        CommandHandler("watchlist", watchlist_cmd),
+        CommandHandler("clearwatch", clearwatch),
         MessageHandler(filters.COMMAND, unknown),
     ]
