@@ -13,14 +13,17 @@
 
 ## ✨ Features
 
-- 📈 **Crypto prices** — live data from the Binance public API (no API key needed)
-- 💱 **Forex rates** — live FX pairs from a free exchange-rate API
-- 🔔 **Price alerts** — get notified when a symbol goes **above** or **below** a target
+- 📈 **Realtime crypto prices** — streamed live from the Binance WebSocket (no API key), with a price cache and automatic REST fallback
+- 💱 **Realtime forex rates** — near-realtime FX from Yahoo Finance, with a Frankfurter (ECB) fallback
+- 🔔 **Price-level alerts** — get notified when a symbol goes **above** or **below** a target
+- 📊 **Percentage-move alerts** — `/alert BTCUSDT up 5%` fires when the price moves N% from a captured baseline
+- 👀 **Watchlists** — track a set of symbols; the bot broadcasts their live prices on a schedule and streams the crypto ones over WebSocket
+- 🗓️ **Daily market summary** — a once-a-day digest of your watchlist at a time you choose
 - 🧾 **Alert management** — list, inspect, and remove your active alerts
 - ⚡ **On-demand quotes** — fetch the current price of any supported symbol instantly
-- 🧠 **Smart polling** — background job checks all alerts on a configurable interval
+- 🧠 **Background jobs** — alert polling, watchlist updates, and the daily digest run on a configurable cadence
 - 🔒 **Secrets-safe** — all keys live in `.env`, never committed to git
-- 🪶 **Minimal footprint** — a single `main.py` entry point and clean module split
+- 🪶 **Clean module split** — realtime layer, data fetchers, and bot logic kept separate
 
 ---
 
@@ -28,11 +31,12 @@
 
 | Area | Choice |
 |------|--------|
-| Language | Python 3.11+ |
-| Bot framework | [`python-telegram-bot`](https://python-telegram-bot.org/) (async) |
+| Language | Python 3.11+ (tested on 3.14) |
+| Bot framework | [`python-telegram-bot`](https://python-telegram-bot.org/) 22.x (async, with JobQueue) |
 | HTTP | `requests` |
-| Crypto data | Binance public REST API |
-| Forex data | openexchangerates / exchangerate.host (free tier) |
+| Realtime | `websockets` (Binance miniTicker stream) |
+| Crypto data | Binance public REST + WebSocket |
+| Forex data | Yahoo Finance (realtime) + Frankfurter (ECB fallback) |
 | Config | `python-dotenv` |
 
 ---
@@ -41,15 +45,20 @@
 
 ```
 trade-alert-bot/
-├── main.py                 # Entry point — starts the bot
+├── main.py                 # Entry point — wires stores, realtime, and jobs
 ├── bot/
 │   ├── __init__.py
 │   ├── handlers.py         # Telegram command & message handlers
-│   ├── alerts.py           # Alert storage + price-crossing logic
-│   └── jobs.py             # Background polling job
+│   ├── alerts.py           # Alert model (price + percent) & store
+│   ├── watchlist.py        # Per-user watchlist store
+│   ├── jobs.py             # Background jobs: polling, updates, daily digest
+│   ├── summary.py          # Shared watchlist-summary message builder
+│   └── util.py             # Shared formatting helpers
 ├── data/
 │   ├── __init__.py
-│   ├── fetcher.py          # Crypto + forex price fetchers
+│   ├── fetcher.py          # Crypto (Binance) + forex (Yahoo) fetchers
+│   ├── realtime.py         # Binance WebSocket realtime manager
+│   ├── pricecache.py       # In-memory latest-price cache
 │   └── symbols.py          # Symbol normalization & validation
 ├── config.py               # Loads .env and exposes settings
 ├── .env.example            # Template — copy to .env and fill in
@@ -111,6 +120,9 @@ TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
 
 # Optional
 POLL_INTERVAL_SECONDS=60      # how often alerts are checked
+WATCHLIST_UPDATE_INTERVAL=300 # how often watchlist prices are broadcast
+DAILY_SUMMARY_TIME=09:00      # daily digest time, "HH:MM" (blank = off)
+CACHE_TTL_SECONDS=30          # freshness window for cached realtime prices
 ALLOWED_USER_IDS=             # comma-separated Telegram user IDs (blank = allow everyone)
 ```
 
@@ -131,17 +143,25 @@ Open your bot on Telegram, press **Start**, and try the commands below.
 | `/start` | Welcome message + help | `/start` |
 | `/help` | List all commands | `/help` |
 | `/price <SYMBOL>` | Get the current price | `/price BTCUSDT` |
-| `/alert <SYMBOL> <above\|below> <PRICE>` | Create an alert | `/alert BTCUSDT above 70000` |
+| `/alert <SYMBOL> <above\|below> <PRICE>` | Price-level alert | `/alert BTCUSDT above 70000` |
+| `/alert <SYMBOL> <up\|down\|change> <N%>` | Percentage-move alert | `/alert BTCUSDT up 5%` |
 | `/alerts` | List your active alerts | `/alerts` |
 | `/remove <ID>` | Remove an alert by ID | `/remove 3` |
+| `/watch <SYMBOL ...>` | Add symbols to your watchlist | `/watch BTCUSDT ETHUSDT EURUSD` |
+| `/unwatch <SYMBOL>` | Remove a symbol from your watchlist | `/unwatch BTCUSDT` |
+| `/watchlist` | Show your watchlist with live prices | `/watchlist` |
+| `/clearwatch` | Empty your watchlist | `/clearwatch` |
+| `/summary` | Send a watchlist summary right now | `/summary` |
 
 ### Examples
 
 ```
-/price ETHUSDT          →  ETH/USDT: $3,512.40
-/price EURUSD           →  EUR/USD: 1.0823
+/price ETHUSDT          →  ETH/USDT: $1,733.65
+/price EURUSD           →  EUR/USD: 1.1469
 /alert BTCUSDT below 65000
 /alert EURUSD above 1.10
+/alert BTCUSDT up 5%            → fires when BTC rises 5% from creation
+/watch BTCUSDT ETHUSDT EURUSD   → tracked + streamed (crypto) / polled (forex)
 ```
 
 ---

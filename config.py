@@ -53,6 +53,12 @@ class Settings:
     telegram_bot_token: str
     poll_interval_seconds: int
     allowed_user_ids: list[int] = field(default_factory=list)
+    # How often each user's watchlist prices are broadcast (seconds).
+    watchlist_update_interval: int = 300
+    # When the daily digest fires, as "HH:MM" (24h, local time). Empty = off.
+    daily_summary_time: str = ""
+    # WebSocket price cache freshness window (seconds).
+    cache_ttl_seconds: int = 30
 
     @property
     def auth_enabled(self) -> bool:
@@ -76,6 +82,9 @@ def load_settings() -> Settings:
         telegram_bot_token=token,
         poll_interval_seconds=_get_int("POLL_INTERVAL_SECONDS", 60),
         allowed_user_ids=_get_int_list("ALLOWED_USER_IDS"),
+        watchlist_update_interval=_get_int("WATCHLIST_UPDATE_INTERVAL", 300),
+        daily_summary_time=_get_str("DAILY_SUMMARY_TIME", ""),
+        cache_ttl_seconds=_get_int("CACHE_TTL_SECONDS", 30),
     )
 
 

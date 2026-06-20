@@ -1,7 +1,8 @@
 """trade-alert-bot — entry point.
 
-Wires together the configuration, alert store, Telegram handlers, and the
-background polling job, then starts long-polling.
+Wires together the configuration, shared stores, realtime WebSocket layer,
+Telegram handlers, and the background jobs (alert polling, watchlist updates,
+daily summary), then starts long-polling.
 
 Usage:
     python main.py
@@ -9,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -21,14 +23,24 @@ from telegram.ext import ApplicationBuilder
 try:
     from bot.alerts import AlertStore
     from bot.handlers import build_handlers
-    from bot.jobs import schedule_polling
+    from bot.jobs import (
+        schedule_daily_summary,
+        schedule_polling,
+        schedule_watchlist_updates,
+    )
+    from bot.watchlist import WatchlistStore
     from config import settings
+    from data import fetcher
+    from data.pricecache import PriceCache
+    from data.realtime import BinanceRealtimeManager
 except RuntimeError as exc:
     print(f"Configuration error: {exc}", file=sys.stderr)
     sys.exit(2)
 
-# Persistence file lives next to this script; the gitignore keeps it local.
-_ALERTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "store", "alerts.json")
+# Persistence files live next to this script; the gitignore keeps them local.
+_STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "store")
+_ALERTS_FILE = os.path.join(_STORE_DIR, "alerts.json")
+_WATCHLIST_FILE = os.path.join(_STORE_DIR, "watchlists.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,12 +51,28 @@ log = logging.getLogger("trade-alert-bot")
 
 
 def main() -> int:
-    """Build the application, register handlers + jobs, and start polling."""
+    """Build the application, wire stores + realtime + jobs, start polling."""
     log.info("Starting trade-alert-bot…")
-    log.info("Auth enabled: %s | Poll interval: %ds", settings.auth_enabled, settings.poll_interval_seconds)
+    log.info(
+        "Auth: %s | Poll: %ds | Watchlist update: %ds | Daily: %r",
+        settings.auth_enabled,
+        settings.poll_interval_seconds,
+        settings.watchlist_update_interval,
+        settings.daily_summary_time or "(off)",
+    )
 
-    # Shared mutable store, optionally persisted to disk.
+    os.makedirs(_STORE_DIR, exist_ok=True)
+
+    # ---- shared mutable state ----
     store = AlertStore(persist_path=_ALERTS_FILE)
+    watchlist = WatchlistStore(persist_path=_WATCHLIST_FILE)
+
+    # ---- realtime layer (Binance WS feeding a price cache) ----
+    cache = PriceCache(ttl_seconds=settings.cache_ttl_seconds)
+    fetcher.set_cache(cache)  # fetch_price reads the cache first, REST otherwise
+    realtime = BinanceRealtimeManager(cache)
+    # Whenever watchlists change, the WS subscribes to the new crypto set.
+    watchlist.set_on_change(realtime.set_symbols)
 
     application = (
         ApplicationBuilder()
@@ -52,15 +80,39 @@ def main() -> int:
         .build()
     )
 
-    # Telegram command handlers (close over `store`).
-    for handler in build_handlers(store):
+    # ---- Telegram command handlers ----
+    for handler in build_handlers(store, watchlist):
         application.add_handler(handler)
 
-    # Recurring background job that checks every alert against live prices.
+    # ---- background jobs ----
     schedule_polling(application, store, settings.poll_interval_seconds)
+    schedule_watchlist_updates(application, watchlist, settings.watchlist_update_interval)
+    if settings.daily_summary_time:
+        schedule_daily_summary(application, watchlist, settings.daily_summary_time)
+
+    # ---- start the realtime WebSocket on the bot's event loop ----
+    # run_polling manages its own loop, so we hook post_init to start WS once
+    # the loop is running, and post_shutdown to stop it cleanly.
+    async def _post_init(_app) -> None:
+        realtime.start()
+        log.info("Realtime WebSocket manager started")
+
+    async def _post_shutdown(_app) -> None:
+        await realtime.stop()
+        log.info("Realtime WebSocket manager stopped")
+
+    application.post_init = _post_init
+    application.post_shutdown = _post_shutdown
 
     log.info("Bot is up — press Ctrl+C to stop.")
-    application.run_polling(allowed_updates=["message"])
+    try:
+        application.run_polling(allowed_updates=["message"])
+    finally:
+        # Best-effort cleanup if the loop is still running (e.g. KeyboardInterrupt).
+        try:
+            asyncio.get_event_loop().create_task(realtime.stop())
+        except RuntimeError:
+            pass
     return 0
 
 
