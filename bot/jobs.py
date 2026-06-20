@@ -16,9 +16,11 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from bot.alerts import Alert, AlertKind, AlertStore, check
+from bot.news import build_news_digest
 from bot.summary import build_price_block
 from bot.util import format_percent, format_price, pct_emoji, symbol_label
 from data.fetcher import fetch_price_or_none
+from data.news import fetch_all
 from data.symbols import parse_symbol
 
 log = logging.getLogger(__name__)
@@ -191,6 +193,52 @@ def schedule_daily_summary(application, watchlist, time_str: str) -> None:
     log.info("Scheduled daily summary at %s local time", time_str)
 
 
+def build_news_drop_callback(news_store, subscribers, sources=None, per_drop: int = 5):
+    """Return a job callback that pushes *new* headlines to news subscribers.
+
+    Fetches all sources, keeps only the unseen articles, broadcasts a digest to
+    every subscriber, then marks them seen. If there are no subscribers or no
+    new articles, the tick is a no-op.
+    """
+
+    async def drop_news(context: ContextTypes.DEFAULT_TYPE) -> None:
+        subs = subscribers.news_subscribers()
+        if not subs:
+            return
+        articles = fetch_all(sources) if sources else fetch_all()
+        new_articles = news_store.filter_unseen(articles)
+        if not new_articles:
+            return
+        # Newest-ish order: preserve feed order; cap the digest size.
+        digest = build_news_digest(new_articles, "📰 <b>Latest crypto news</b>", limit=per_drop)
+        for user_id in subs:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=digest,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not send news to %s: %s", user_id, exc)
+        news_store.mark_seen(new_articles)
+        log.info("News drop: %d new article(s) to %d subscriber(s)", len(new_articles), len(subs))
+
+    return drop_news
+
+
+def schedule_news_drops(application, news_store, subscribers, interval_seconds: int, **kwargs) -> None:
+    """Register the periodic news auto-drop job."""
+    callback = build_news_drop_callback(news_store, subscribers, **kwargs)
+    application.job_queue.run_repeating(
+        callback,
+        interval=interval_seconds,
+        first=interval_seconds,
+        name="news_drops",
+    )
+    log.info("Scheduled news auto-drop every %ds", interval_seconds)
+
+
 # Re-exported so callers can type-hint without importing telegram.ext directly.
 __all__ = [
     "build_poll_callback",
@@ -199,4 +247,6 @@ __all__ = [
     "schedule_watchlist_updates",
     "build_daily_summary_callback",
     "schedule_daily_summary",
+    "build_news_drop_callback",
+    "schedule_news_drops",
 ]

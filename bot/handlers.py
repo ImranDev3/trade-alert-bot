@@ -18,11 +18,13 @@ from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.alerts import AlertKind, AlertStore, Direction
+from bot.news import build_news_digest
 from bot.summary import build_price_block
 from bot.util import format_price, kind_emoji, symbol_label
 from bot.watchlist import WatchlistStore
 from config import settings
 from data.fetcher import PriceError, fetch_price, fetch_price_or_none
+from data.news import fetch_all
 from data.symbols import parse_symbol
 
 log = logging.getLogger(__name__)
@@ -42,7 +44,11 @@ HELP_TEXT = (
     "/unwatch &lt;SYMBOL&gt; — remove from watchlist\n"
     "/watchlist — show your watchlist with live prices\n"
     "/clearwatch — empty your watchlist\n"
-    "/summary — send your watchlist summary now\n"
+    "/summary — send your watchlist summary now\n\n"
+    "/news — latest crypto headlines now\n"
+    "/newsauto on|off — turn automatic news drops on/off\n"
+    "/liqalert &lt;USD&gt; — alert on liquidations worth ≥ this amount\n"
+    "/liqalert off — stop liquidation alerts\n"
     "/help — show this message\n\n"
     "<b>Supported markets</b>\n"
     "🪙 Crypto via Binance (e.g. BTCUSDT, ETHUSDT, SOLBTC)\n"
@@ -89,8 +95,8 @@ def _auth_only(func: Handler) -> Handler:
     return wrapper
 
 
-def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
-    """Return the list of handlers to register, closing over *store* and *watchlist*."""
+def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) -> list:
+    """Return the list of handlers to register, closing over the shared stores."""
 
     @_auth_only
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -274,6 +280,58 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
             await _reply(update, "📭 Your watchlist was already empty.")
 
     @_auth_only
+    async def news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Fetch and show the latest headlines right now (one-off)."""
+        articles = fetch_all(per_source=3)
+        if not articles:
+            await _reply(update, "📭 Couldn't fetch any news headlines right now. Try again later.")
+            return
+        digest = build_news_digest(articles[:8], "📰 <b>Latest crypto news</b>", limit=8)
+        await _reply(update, digest)
+
+    @_auth_only
+    async def newsauto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Turn automatic news drops on/off for the caller."""
+        arg = (context.args[0] if context.args else "on").strip().lower()
+        uid = update.effective_user.id
+        if arg in ("off", "stop", "no", "0"):
+            if subscribers.unsubscribe_news(uid):
+                await _reply(update, "🔕 Auto news drops turned <b>off</b>.")
+            else:
+                await _reply(update, "Auto news was already off.")
+            return
+        if arg in ("on", "start", "yes", "1", ""):
+            if subscribers.subscribe_news(uid):
+                await _reply(update, "✅ Auto news drops turned <b>on</b>.\nI'll push new headlines to you automatically.")
+            else:
+                await _reply(update, "Auto news is already on.")
+            return
+        await _reply(update, "Usage: <code>/newsauto on</code>  or  <code>/newsauto off</code>")
+
+    @_auth_only
+    async def liqalert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Set/clear the large-liquidation alert threshold for the caller."""
+        arg = (context.args[0] if context.args else "").strip().lower()
+        uid = update.effective_user.id
+        if arg in ("off", "stop", "no", "0"):
+            if subscribers.clear_liq_threshold(uid):
+                await _reply(update, "🔕 Liquidation alerts turned <b>off</b>.")
+            else:
+                await _reply(update, "Liquidation alerts were already off.")
+            return
+        try:
+            usd = float(arg.replace(",", "").replace("$", ""))
+        except ValueError:
+            await _reply(update, "Usage: <code>/liqalert &lt;USD&gt;</code>  (e.g. /liqalert 100000)\nor <code>/liqalert off</code>")
+            return
+        stored = subscribers.set_liq_threshold(uid, usd)
+        await _reply(
+            update,
+            f"✅ Liquidation alerts on — I'll ping you on liquidations worth "
+            f"≥ <code>${stored:,.0f}</code>.\nUse /liqalert off to stop.",
+        )
+
+    @_auth_only
     async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         symbols = watchlist.get(update.effective_user.id)
         if not symbols:
@@ -298,5 +356,8 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
         CommandHandler("watchlist", watchlist_cmd),
         CommandHandler("clearwatch", clearwatch),
         CommandHandler("summary", summary),
+        CommandHandler("news", news),
+        CommandHandler("newsauto", newsauto),
+        CommandHandler("liqalert", liqalert),
         MessageHandler(filters.COMMAND, unknown),
     ]
