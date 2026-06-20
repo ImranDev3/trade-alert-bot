@@ -57,9 +57,10 @@ coverage.xml
 *.log
 logs/
 *.pid
-data/
+store/
 *.sqlite
 *.db
+*.json.bak
 
 # ---- Jupyter ----
 .ipynb_checkpoints/
