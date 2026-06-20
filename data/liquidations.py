@@ -6,8 +6,10 @@ event carries the side (BUY = a short got liquidated, SELL = a long got
 liquidated), the symbol, the fill price, and the total quantity.
 
 :class:`LiquidationWatcher` connects to the stream, parses each event into a
-:class:`Liquidation` dataclass, and hands it to a callback (the bot uses this
-to fan the alert out to every user whose threshold it meets).
+:class:`Liquidation` dataclass, and hands it to a callback. The bot's callback
+appends each event to a :class:`LiquidationBuffer`; a separate one-minute job
+drains the buffer and sends each user a digest of how much was liquidated, so
+the user sees a per-minute summary ("recheck every minute") instead of a firehose.
 
 Resilience mirrors :class:`~data.realtime.BinanceRealtimeManager`: port-443
 endpoints first, reconnect with backoff, never crash the loop.
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -164,3 +167,42 @@ class LiquidationWatcher:
         # Combined-stream responses wrap the payload under "data".
         payload = msg.get("data", msg)
         return parse_liquidation(payload)
+
+
+class LiquidationBuffer:
+    """Accumulates liquidation events for the per-minute digest job.
+
+    The realtime watcher appends every parsed event here; the one-minute
+    digest job calls :meth:`drain` to take everything accumulated since the
+    last tick, build a digest, and send it. ``time.monotonic`` is used so the
+    window is immune to wall-clock changes.
+    """
+
+    def __init__(self, window_seconds: float = 60.0) -> None:
+        self._window = window_seconds
+        # (monotonic timestamp, event) pairs, appended as they arrive.
+        self._events: list[tuple[float, Liquidation]] = []
+
+    def add(self, liq: Liquidation) -> None:
+        """Append *liq* with the current monotonic timestamp."""
+        self._events.append((time.monotonic(), liq))
+
+    def drain(self) -> list[Liquidation]:
+        """Return all accumulated events and clear the buffer.
+
+        Events older than the window are dropped first (housekeeping) so a long
+        gap between ticks doesn't surface stale liquidations.
+        """
+        self.prune()
+        drained = [liq for _, liq in self._events]
+        self._events.clear()
+        return drained
+
+    def prune(self) -> None:
+        """Drop events older than the window without returning them."""
+        cutoff = time.monotonic() - self._window
+        self._events = [(t, liq) for t, liq in self._events if t >= cutoff]
+
+    def __len__(self) -> int:
+        return len(self._events)
+
