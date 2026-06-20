@@ -21,6 +21,7 @@ from bot.summary import build_price_block
 from bot.util import format_percent, format_price, pct_emoji, symbol_label
 from data.fetcher import fetch_price_or_none
 from data.news import fetch_all
+from data.newsfilter import DEFAULT_KEYWORD_THRESHOLD, filter_important
 from data.symbols import parse_symbol
 
 log = logging.getLogger(__name__)
@@ -193,12 +194,20 @@ def schedule_daily_summary(application, watchlist, time_str: str) -> None:
     log.info("Scheduled daily summary at %s local time", time_str)
 
 
-def build_news_drop_callback(news_store, subscribers, sources=None, per_drop: int = 5):
-    """Return a job callback that pushes *new* headlines to news subscribers.
+def build_news_drop_callback(news_store, subscribers, watchlist=None, sources=None,
+                             per_drop: int = 5, keyword_threshold: int = DEFAULT_KEYWORD_THRESHOLD):
+    """Return a job callback that pushes *new, important* headlines to subscribers.
 
-    Fetches all sources, keeps only the unseen articles, broadcasts a digest to
-    every subscriber, then marks them seen. If there are no subscribers or no
-    new articles, the tick is a no-op.
+    For each subscriber the job:
+    1. fetches every source,
+    2. drops articles already seen,
+    3. keeps only the articles :func:`is_important` flags for that user's
+       watchlist (high-signal keywords OR a watched symbol's base currency),
+    4. sends a per-user digest, and
+    5. marks everything seen so no headline is re-sent next tick.
+
+    A user with no matching headlines gets nothing that tick (no spam). If there
+    are no subscribers or no new articles at all, the tick is a no-op.
     """
 
     async def drop_news(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -209,9 +218,16 @@ def build_news_drop_callback(news_store, subscribers, sources=None, per_drop: in
         new_articles = news_store.filter_unseen(articles)
         if not new_articles:
             return
-        # Newest-ish order: preserve feed order; cap the digest size.
-        digest = build_news_digest(new_articles, "📰 <b>Latest crypto news</b>", limit=per_drop)
+
+        sent_total = 0
         for user_id in subs:
+            wl = watchlist.get(user_id) if watchlist is not None else []
+            important = filter_important(new_articles, wl, keyword_threshold=keyword_threshold)
+            if not important:
+                continue
+            digest = build_news_digest(
+                important, "📰 <b>Important crypto news</b>", limit=per_drop
+            )
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -219,16 +235,23 @@ def build_news_drop_callback(news_store, subscribers, sources=None, per_drop: in
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
+                sent_total += 1
             except Exception as exc:  # noqa: BLE001
                 log.warning("Could not send news to %s: %s", user_id, exc)
+
+        # Mark all new articles seen regardless of who received them, so a
+        # stale headline never re-surfaces on a later tick.
         news_store.mark_seen(new_articles)
-        log.info("News drop: %d new article(s) to %d subscriber(s)", len(new_articles), len(subs))
+        log.info(
+            "News drop: %d new article(s); important digests sent to %d/%d subscriber(s)",
+            len(new_articles), sent_total, len(subs),
+        )
 
     return drop_news
 
 
 def schedule_news_drops(application, news_store, subscribers, interval_seconds: int, **kwargs) -> None:
-    """Register the periodic news auto-drop job."""
+    """Register the periodic news auto-drop job (importance-filtered)."""
     callback = build_news_drop_callback(news_store, subscribers, **kwargs)
     application.job_queue.run_repeating(
         callback,
@@ -236,7 +259,7 @@ def schedule_news_drops(application, news_store, subscribers, interval_seconds: 
         first=interval_seconds,
         name="news_drops",
     )
-    log.info("Scheduled news auto-drop every %ds", interval_seconds)
+    log.info("Scheduled news auto-drop every %ds (importance-filtered)", interval_seconds)
 
 
 # Re-exported so callers can type-hint without importing telegram.ext directly.

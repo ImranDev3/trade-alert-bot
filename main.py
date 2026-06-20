@@ -97,7 +97,10 @@ def main() -> int:
     # ---- background jobs ----
     schedule_polling(application, store, settings.poll_interval_seconds)
     schedule_watchlist_updates(application, watchlist, settings.watchlist_update_interval)
-    schedule_news_drops(application, news_store, subscribers, settings.news_drop_interval)
+    schedule_news_drops(
+        application, news_store, subscribers,
+        settings.news_drop_interval, watchlist=watchlist,
+    )
     if settings.daily_summary_time:
         schedule_daily_summary(application, watchlist, settings.daily_summary_time)
 
