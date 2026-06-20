@@ -4,8 +4,10 @@ Both data sources are **free and key-less**:
 
 * **Crypto** — Binance public REST API
   ``GET https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT``
-* **Forex** — Frankfurter (European Central Bank reference rates)
-  ``GET https://api.frankfurter.app/latest?from=EUR&to=USD``
+* **Forex** — Yahoo Finance (near-realtime intraday quotes)
+  ``GET https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X``
+  Frankfurter (ECB daily reference rates) is kept as a fallback so the bot
+  still works if Yahoo rate-limits or is unreachable from a network.
 
 The public entry point is :func:`fetch_price`, which dispatches on the
 symbol's :class:`~data.symbols.SymbolKind`.
@@ -25,7 +27,11 @@ log = logging.getLogger(__name__)
 _TIMEOUT = (5, 10)
 
 _BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
+_YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 _FRANKFURTER_URL = "https://api.frankfurter.app/latest"
+
+# A browser-like User-Agent avoids Yahoo's blank-response filter for scripts.
+_YAHOO_HEADERS = {"User-Agent": "trade-alert-bot/1.0 (github.com/ImranDev3)"}
 
 
 class PriceError(Exception):
@@ -48,8 +54,31 @@ def _fetch_crypto(symbol: Symbol) -> float:
     return float(price_str)
 
 
-def _fetch_forex(symbol: Symbol) -> float:
-    """Return the latest FX rate from Frankfurter for *symbol* (e.g. EUR/USD)."""
+def _yahoo_symbol(symbol: Symbol) -> str:
+    """Map a forex pair to Yahoo's symbol form (``EURUSD`` -> ``EURUSD=X``)."""
+    return f"{symbol.normalized}=X"
+
+
+def _fetch_forex_yahoo(symbol: Symbol) -> float:
+    """Return the latest FX rate from Yahoo Finance for *symbol*."""
+    url = f"{_YAHOO_CHART_URL}/{_yahoo_symbol(symbol)}"
+    try:
+        resp = requests.get(url, headers=_YAHOO_HEADERS, timeout=_TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise PriceError(f"Yahoo request failed for {symbol.display}: {exc}") from exc
+
+    result = resp.json().get("chart", {}).get("result")
+    if not result:
+        raise PriceError(f"Yahoo returned no data for {symbol.display}")
+    price = result[0].get("meta", {}).get("regularMarketPrice")
+    if price is None:
+        raise PriceError(f"Yahoo returned no price for {symbol.display}")
+    return float(price)
+
+
+def _fetch_forex_frankfurter(symbol: Symbol) -> float:
+    """Return the daily FX reference rate from Frankfurter (fallback only)."""
     if not symbol.base or not symbol.quote:
         raise PriceError(f"Cannot fetch forex rate for malformed symbol {symbol.normalized}")
 
@@ -65,6 +94,15 @@ def _fetch_forex(symbol: Symbol) -> float:
     if rate is None:
         raise PriceError(f"Frankfurter returned no rate for {symbol.display}")
     return float(rate)
+
+
+def _fetch_forex(symbol: Symbol) -> float:
+    """Fetch the latest FX rate: Yahoo first, Frankfurter as fallback."""
+    try:
+        return _fetch_forex_yahoo(symbol)
+    except PriceError as exc:
+        log.info("Yahoo forex failed (%s); falling back to Frankfurter", exc)
+        return _fetch_forex_frankfurter(symbol)
 
 
 def fetch_price(symbol: Symbol) -> float:
