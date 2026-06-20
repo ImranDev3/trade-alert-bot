@@ -16,6 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from bot.alerts import Alert, AlertStore, check
+from bot.summary import build_price_block
 from bot.util import format_price, symbol_label
 from data.fetcher import fetch_price_or_none
 from data.symbols import parse_symbol
@@ -91,5 +92,47 @@ def schedule_polling(application: Application, store: AlertStore, interval_secon
     log.info("Scheduled alert polling every %ds", interval_seconds)
 
 
+def build_watchlist_update_callback(watchlist):
+    """Return a job callback that broadcasts live watchlist prices to each user.
+
+    Runs on a separate (typically slower) cadence than alert polling, since a
+    watchlist snapshot is bulkier than a single crossing event.
+    """
+
+    async def update_watchlists(context: ContextTypes.DEFAULT_TYPE) -> None:
+        for user_id in watchlist.all_user_ids():
+            symbols = watchlist.get(user_id)
+            if not symbols:
+                continue
+            text = build_price_block(symbols, "🔄 <b>Watchlist update</b>")
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not send watchlist update to %s: %s", user_id, exc)
+
+    return update_watchlists
+
+
+def schedule_watchlist_updates(application, watchlist, interval_seconds: int) -> None:
+    """Register the periodic watchlist-broadcast job."""
+    callback = build_watchlist_update_callback(watchlist)
+    application.job_queue.run_repeating(
+        callback,
+        interval=interval_seconds,
+        first=interval_seconds,
+        name="watchlist_updates",
+    )
+    log.info("Scheduled watchlist updates every %ds", interval_seconds)
+
+
 # Re-exported so callers can type-hint without importing telegram.ext directly.
-__all__ = ["build_poll_callback", "schedule_polling"]
+__all__ = [
+    "build_poll_callback",
+    "schedule_polling",
+    "build_watchlist_update_callback",
+    "schedule_watchlist_updates",
+]

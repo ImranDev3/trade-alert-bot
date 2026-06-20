@@ -31,3 +31,15 @@ def kind_emoji(symbol: str) -> str:
     if sym is None:
         return "📈"
     return "🪙" if sym.kind.value == "crypto" else "💱"
+
+
+def format_percent(pct: float) -> str:
+    """Format a percentage with a sign and a 2-decimal value, e.g. ``+1.23%``."""
+    sign = "+" if pct >= 0 else ""
+    return f"{sign}{pct:.2f}%"
+
+
+def pct_emoji(pct: float) -> str:
+    """Up/down marker for a percentage change."""
+    return "🟢" if pct >= 0 else "🔴"
+
