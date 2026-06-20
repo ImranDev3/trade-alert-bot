@@ -19,7 +19,7 @@
 - 📊 **Percentage-move alerts** — `/alert BTCUSDT up 5%` fires when the price moves N% from a captured baseline
 - 👀 **Watchlists** — track a set of symbols; the bot broadcasts their live prices on a schedule and streams the crypto ones over WebSocket
 - 🗓️ **Daily market summary** — a once-a-day digest of your watchlist at a time you choose
-- 📰 **Auto news drops** — opt in and the bot pushes fresh crypto headlines from Cointelegraph, CoinDesk, Decrypt & Bitcoin News, with dedup so nothing repeats
+- 📰 **Auto news drops (important only)** — opt in and the bot pushes the headlines that actually matter, from Cointelegraph, CoinDesk, Decrypt & Bitcoin News. Each user only gets headlines that score as important — high-signal topics (ETF, SEC, hacks, crashes, listings, partnerships…) **or** mention a symbol on their watchlist. Dedup ensures nothing repeats
 - 💥 **Large-liquidation alerts** — set a USD threshold and the bot pings you the moment a forced liquidation worth that much hits Binance (long/short, size, price), streamed live
 - 🧾 **Alert management** — list, inspect, and remove your active alerts
 - ⚡ **On-demand quotes** — fetch the current price of any supported symbol instantly
@@ -65,6 +65,7 @@ trade-alert-bot/
 │   ├── realtime.py         # Binance WebSocket price manager
 │   ├── liquidations.py     # Binance WebSocket liquidation watcher
 │   ├── news.py             # RSS news aggregator
+│   ├── newsfilter.py       # Importance scoring (keywords + watchlist symbols)
 │   ├── pricecache.py       # In-memory latest-price cache
 │   └── symbols.py          # Symbol normalization & validation
 ├── config.py               # Loads .env and exposes settings
@@ -174,8 +175,8 @@ Open your bot on Telegram, press **Start**, and try the commands below.
 /alert EURUSD above 1.10
 /alert BTCUSDT up 5%            → fires when BTC rises 5% from creation
 /watch BTCUSDT ETHUSDT EURUSD   → tracked + streamed (crypto) / polled (forex)
-/news                          → latest headlines right now
-/newsauto on                   → auto news drops from then on (no command needed)
+/news                          → latest headlines right now (all sources)
+/newsauto on                   → only IMPORTANT headlines auto-dropped from then on
 /liqalert 100000               → pinged on any liquidation worth ≥ $100k, live
 ```
 
