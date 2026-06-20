@@ -19,6 +19,7 @@ import logging
 
 import requests
 
+from data.pricecache import PriceCache
 from data.symbols import Symbol, SymbolKind
 
 log = logging.getLogger(__name__)
@@ -33,13 +34,24 @@ _FRANKFURTER_URL = "https://api.frankfurter.app/latest"
 # A browser-like User-Agent avoids Yahoo's blank-response filter for scripts.
 _YAHOO_HEADERS = {"User-Agent": "trade-alert-bot/1.0 (github.com/ImranDev3)"}
 
+# Optional shared cache. When set (by main.py via set_cache()), the realtime
+# Binance WebSocket fills it and fetch_price reads it first — giving live
+# crypto prices without a REST round-trip.
+_cache: PriceCache | None = None
+
 
 class PriceError(Exception):
     """Raised when a price cannot be fetched (network, bad symbol, etc.)."""
 
 
-def _fetch_crypto(symbol: Symbol) -> float:
-    """Return the latest crypto price from Binance for *symbol*."""
+def set_cache(cache: PriceCache | None) -> None:
+    """Inject the shared :class:`PriceCache` used by realtime reads."""
+    global _cache
+    _cache = cache
+
+
+def _fetch_crypto_rest(symbol: Symbol) -> float:
+    """Return the latest crypto price from Binance REST for *symbol*."""
     params = {"symbol": symbol.normalized}
     try:
         resp = requests.get(_BINANCE_URL, params=params, timeout=_TIMEOUT)
@@ -52,6 +64,15 @@ def _fetch_crypto(symbol: Symbol) -> float:
     if price_str is None:
         raise PriceError(f"Binance returned no price for {symbol.normalized}")
     return float(price_str)
+
+
+def _fetch_crypto(symbol: Symbol) -> float:
+    """Return the latest crypto price: cache first, REST as fallback."""
+    if _cache is not None:
+        cached = _cache.get(symbol.normalized)
+        if cached is not None:
+            return cached
+    return _fetch_crypto_rest(symbol)
 
 
 def _yahoo_symbol(symbol: Symbol) -> str:
