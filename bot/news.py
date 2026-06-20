@@ -3,9 +3,11 @@
 The :class:`NewsStore` remembers which article links have already been pushed
 so the periodic job only ever broadcasts *new* headlines, even across restarts.
 
-:func:`build_news_digest` renders the digest as a Telegram-friendly HTML block:
-each article becomes a chunk with a category emoji, a bolded title, and a
-source pill so the user can scan the important stories at a glance.
+:func:`build_news_digest` renders the digest as a "Mac-style" notification
+card: an accent line, a thick divider, a blockquote-wrapped body, and one
+tight block per article with a category emoji, bolded title, italic source
+pill, and a compact "read" link. The result reads like a native card inside
+Telegram rather than plain text.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 import logging
 import os
 
+from bot.pretty import RULE_THIN, card, pill, stack
 from data.news import Article
 from data.newsfilter import category_emoji
 
@@ -68,34 +71,46 @@ class NewsStore:
 
 
 def _format_article(a: Article) -> str:
-    """Render a single article as a tight, scannable HTML block.
+    """Render a single article as a tight, scannable blockquote block.
 
     Layout:
-        <emoji> <b>Title</b>
-        ─── <i>Source</i> · <link>
+        <emoji>  <b>Title</b>
+        <i>Source</i>  ·  <a href="…">read</a>
     """
     emoji = category_emoji(a.title)
-    title = a.title
-    return (
-        f"{emoji}  <b>{title}</b>\n"
-        f"    <i>{a.source}</i>  ·  <a href=\"{a.link}\">read</a>"
+    return stack(
+        f"{emoji}  <b>{a.title}</b>",
+        f"{pill(a.source)}  ·  <a href=\"{a.link}\">read →</a>",
+        sep="\n",
     )
 
 
-def build_news_digest(articles: list[Article], header: str, limit: int = 5) -> str:
-    """Render up to *limit* articles as a Telegram-friendly HTML digest.
+def build_news_digest(
+    articles: list[Article],
+    header: str = "📰  Important crypto news",
+    limit: int = 5,
+    *,
+    accent: str = "🟦",
+    subtitle: str = "Auto-filtered · keyword + watchlist signals",
+) -> str:
+    """Render up to *limit* articles as a Mac-style Telegram notification card.
 
-    The output is one header line, then one block per article, separated by
-    blank lines so Telegram renders each story as its own paragraph. Source
-    is rendered as an italic pill and the link as a compact "read" so a long
-    title doesn't run off-screen on a phone.
+    The output is a single blockquoted card with a thick divider under the
+    title, one block per article inside, and an optional footer with the
+    count when there are more than *limit* items. The *header* argument is
+    kept for backwards compatibility — it's used as the card title.
     """
     if not articles:
-        return f"{header}\n<i>No new headlines right now.</i>"
+        body = "<i>No new headlines right now.</i>"
+        return card(header, body, accent=accent)
 
     blocks = [_format_article(a) for a in articles[:limit]]
-    digest = "\n\n".join(blocks)
     if len(articles) > limit:
-        digest += f"\n\n…<i>and {len(articles) - limit} more</i>"
-    return f"{header}\n\n{digest}"
+        blocks.append(f"<i>…and {len(articles) - limit} more</i>")
+    if subtitle:
+        blocks.insert(0, f"<i>{subtitle}</i>")
+
+    body = "\n\n" + RULE_THIN + "\n\n" + "\n\n".join(blocks)
+    return card(header, body, accent=accent)
+
 
