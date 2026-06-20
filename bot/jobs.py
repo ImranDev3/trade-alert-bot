@@ -143,10 +143,60 @@ def schedule_watchlist_updates(application, watchlist, interval_seconds: int) ->
     log.info("Scheduled watchlist updates every %ds", interval_seconds)
 
 
+def build_daily_summary_callback(watchlist):
+    """Return a job callback that sends a daily watchlist summary to each user.
+
+    Reuses :func:`build_price_block` so the daily digest looks just like the
+    periodic update, only with a different header.
+    """
+
+    async def daily_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
+        for user_id in watchlist.all_user_ids():
+            symbols = watchlist.get(user_id)
+            if not symbols:
+                continue
+            text = build_price_block(symbols, "🗓️ <b>Daily market summary</b>")
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Could not send daily summary to %s: %s", user_id, exc)
+
+    return daily_summary
+
+
+def schedule_daily_summary(application, watchlist, time_str: str) -> None:
+    """Register a once-daily summary job at *time_str* (``"HH:MM``", 24h, local)."""
+    import datetime as _dt
+
+    parts = time_str.split(":")
+    if len(parts) != 2:
+        log.warning("Invalid DAILY_SUMMARY_TIME %r; skipping daily summary job", time_str)
+        return
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        log.warning("Invalid DAILY_SUMMARY_TIME %r; skipping daily summary job", time_str)
+        return
+
+    callback = build_daily_summary_callback(watchlist)
+    application.job_queue.run_daily(
+        callback,
+        time=_dt.time(hour=hour, minute=minute),
+        name="daily_summary",
+    )
+    log.info("Scheduled daily summary at %s local time", time_str)
+
+
 # Re-exported so callers can type-hint without importing telegram.ext directly.
 __all__ = [
     "build_poll_callback",
     "schedule_polling",
     "build_watchlist_update_callback",
     "schedule_watchlist_updates",
+    "build_daily_summary_callback",
+    "schedule_daily_summary",
 ]

@@ -18,6 +18,7 @@ from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.alerts import AlertKind, AlertStore, Direction
+from bot.summary import build_price_block
 from bot.util import format_price, kind_emoji, symbol_label
 from bot.watchlist import WatchlistStore
 from config import settings
@@ -273,6 +274,15 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
             await _reply(update, "📭 Your watchlist was already empty.")
 
     @_auth_only
+    async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        symbols = watchlist.get(update.effective_user.id)
+        if not symbols:
+            await _reply(update, "📭 Your watchlist is empty — nothing to summarize.\nAdd symbols with /watch")
+            return
+        block = build_price_block(symbols, "📊 <b>Market summary</b>")
+        await _reply(update, block)
+
+    @_auth_only
     async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _reply(update, "🤔 I didn't understand that. Send /help to see what I can do.")
 
@@ -287,5 +297,6 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
         CommandHandler("unwatch", unwatch),
         CommandHandler("watchlist", watchlist_cmd),
         CommandHandler("clearwatch", clearwatch),
+        CommandHandler("summary", summary),
         MessageHandler(filters.COMMAND, unknown),
     ]
