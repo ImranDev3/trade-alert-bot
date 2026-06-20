@@ -71,6 +71,35 @@ def keyword_score(title: str) -> int:
     return score
 
 
+# Category emoji per topic. The first matching category in order wins, so
+# we put the most specific/important categories first (regulation, hacks) and
+# the generic crypto marker last as a fallback.
+_CATEGORY_EMOJI: list[tuple[str, str]] = [
+    (r"\bSEC\b|\bregulat|\bban\b|\blawsuit\b|\bsanction|\bapprov|\bruling\b|\bDOJ\b", "⚖️"),
+    (r"\bETF\b|\bhalving\b", "🏛️"),
+    (r"\bhack\b|\bexploit\b|\bbreach\b|\bdrain\b|\bvulnerab", "🔓"),
+    (r"\bcrash\b|\bplunge\b|\bselloff\b|\bliquidat", "📉"),
+    (r"\bsurge\b|\brally\b|\bpump\b|\ball[-\s]?time high\b|\bATH\b", "🚀"),
+    (r"\bbillion\b|\btrillion\b|\binflow|\boutflow", "💰"),
+    (r"\bpartnership\b|\blaunch\b|\bintegrat|\blisting\b|\bacquisit|\bmerger", "🤝"),
+    (r"\bairdrop\b|\bupgrade\b|\bfork\b", "🧬"),
+    (r"\brecord\b|\bcrash\b", "🔔"),
+    (r"\bBitcoin\b|\bBTC\b|\bEthereum\b|\bETH\b|\bSolana\b|\bSOL\b", "🪙"),
+]
+_COMPILED_CATEGORIES = [(re.compile(pat, re.IGNORECASE), emoji) for pat, emoji in _CATEGORY_EMOJI]
+
+
+def category_emoji(title: str) -> str:
+    """Return a topic-matched emoji for *title*, or a generic 🪙 fallback."""
+    if not title:
+        return "🪙"
+    for pattern, emoji in _COMPILED_CATEGORIES:
+        if pattern.search(title):
+            return emoji
+    return "🪙"
+
+
+
 def matches_watchlist(title: str, symbols: list[str]) -> bool:
     """True when *title* mentions the base of any of *symbols* as a word."""
     terms = _symbol_terms(symbols)
