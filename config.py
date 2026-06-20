@@ -59,6 +59,8 @@ class Settings:
     daily_summary_time: str = ""
     # WebSocket price cache freshness window (seconds).
     cache_ttl_seconds: int = 30
+    # How often (seconds) the news auto-drop job pulls fresh RSS headlines.
+    news_drop_interval: int = 600
 
     @property
     def auth_enabled(self) -> bool:
@@ -85,6 +87,7 @@ def load_settings() -> Settings:
         watchlist_update_interval=_get_int("WATCHLIST_UPDATE_INTERVAL", 300),
         daily_summary_time=_get_str("DAILY_SUMMARY_TIME", ""),
         cache_ttl_seconds=_get_int("CACHE_TTL_SECONDS", 30),
+        news_drop_interval=_get_int("NEWS_DROP_INTERVAL", 600),
     )
 
 

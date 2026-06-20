@@ -25,12 +25,17 @@ try:
     from bot.handlers import build_handlers
     from bot.jobs import (
         schedule_daily_summary,
+        schedule_news_drops,
         schedule_polling,
         schedule_watchlist_updates,
     )
+    from bot.liquidations import build_liquidation_handler
+    from bot.news import NewsStore
+    from bot.subscribers import SubscriberStore
     from bot.watchlist import WatchlistStore
     from config import settings
     from data import fetcher
+    from data.liquidations import LiquidationWatcher
     from data.pricecache import PriceCache
     from data.realtime import BinanceRealtimeManager
 except RuntimeError as exc:
@@ -41,6 +46,8 @@ except RuntimeError as exc:
 _STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "store")
 _ALERTS_FILE = os.path.join(_STORE_DIR, "alerts.json")
 _WATCHLIST_FILE = os.path.join(_STORE_DIR, "watchlists.json")
+_SUBS_FILE = os.path.join(_STORE_DIR, "subscribers.json")
+_NEWS_SEEN_FILE = os.path.join(_STORE_DIR, "seen_news.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,10 +61,11 @@ def main() -> int:
     """Build the application, wire stores + realtime + jobs, start polling."""
     log.info("Starting trade-alert-bot…")
     log.info(
-        "Auth: %s | Poll: %ds | Watchlist update: %ds | Daily: %r",
+        "Auth: %s | Poll: %ds | WL: %ds | News: %ds | Daily: %r",
         settings.auth_enabled,
         settings.poll_interval_seconds,
         settings.watchlist_update_interval,
+        settings.news_drop_interval,
         settings.daily_summary_time or "(off)",
     )
 
@@ -66,6 +74,8 @@ def main() -> int:
     # ---- shared mutable state ----
     store = AlertStore(persist_path=_ALERTS_FILE)
     watchlist = WatchlistStore(persist_path=_WATCHLIST_FILE)
+    subscribers = SubscriberStore(persist_path=_SUBS_FILE)
+    news_store = NewsStore(persist_path=_NEWS_SEEN_FILE)
 
     # ---- realtime layer (Binance WS feeding a price cache) ----
     cache = PriceCache(ttl_seconds=settings.cache_ttl_seconds)
@@ -81,25 +91,32 @@ def main() -> int:
     )
 
     # ---- Telegram command handlers ----
-    for handler in build_handlers(store, watchlist):
+    for handler in build_handlers(store, watchlist, subscribers):
         application.add_handler(handler)
 
     # ---- background jobs ----
     schedule_polling(application, store, settings.poll_interval_seconds)
     schedule_watchlist_updates(application, watchlist, settings.watchlist_update_interval)
+    schedule_news_drops(application, news_store, subscribers, settings.news_drop_interval)
     if settings.daily_summary_time:
         schedule_daily_summary(application, watchlist, settings.daily_summary_time)
 
-    # ---- start the realtime WebSocket on the bot's event loop ----
+    # ---- large-liquidation watcher (separate Binance WS stream) ----
+    liq_handler = build_liquidation_handler(application.bot, subscribers)
+    liq_watcher = LiquidationWatcher(liq_handler)
+
+    # ---- start the realtime WebSockets on the bot's event loop ----
     # run_polling manages its own loop, so we hook post_init to start WS once
-    # the loop is running, and post_shutdown to stop it cleanly.
+    # the loop is running, and post_shutdown to stop them cleanly.
     async def _post_init(_app) -> None:
         realtime.start()
-        log.info("Realtime WebSocket manager started")
+        liq_watcher.start()
+        log.info("Realtime price + liquidation WebSocket managers started")
 
     async def _post_shutdown(_app) -> None:
         await realtime.stop()
-        log.info("Realtime WebSocket manager stopped")
+        await liq_watcher.stop()
+        log.info("Realtime price + liquidation WebSocket managers stopped")
 
     application.post_init = _post_init
     application.post_shutdown = _post_shutdown
@@ -111,6 +128,7 @@ def main() -> int:
         # Best-effort cleanup if the loop is still running (e.g. KeyboardInterrupt).
         try:
             asyncio.get_event_loop().create_task(realtime.stop())
+            asyncio.get_event_loop().create_task(liq_watcher.stop())
         except RuntimeError:
             pass
     return 0

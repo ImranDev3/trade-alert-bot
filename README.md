@@ -19,9 +19,11 @@
 - 📊 **Percentage-move alerts** — `/alert BTCUSDT up 5%` fires when the price moves N% from a captured baseline
 - 👀 **Watchlists** — track a set of symbols; the bot broadcasts their live prices on a schedule and streams the crypto ones over WebSocket
 - 🗓️ **Daily market summary** — a once-a-day digest of your watchlist at a time you choose
+- 📰 **Auto news drops** — opt in and the bot pushes fresh crypto headlines from Cointelegraph, CoinDesk, Decrypt & Bitcoin News, with dedup so nothing repeats
+- 💥 **Large-liquidation alerts** — set a USD threshold and the bot pings you the moment a forced liquidation worth that much hits Binance (long/short, size, price), streamed live
 - 🧾 **Alert management** — list, inspect, and remove your active alerts
 - ⚡ **On-demand quotes** — fetch the current price of any supported symbol instantly
-- 🧠 **Background jobs** — alert polling, watchlist updates, and the daily digest run on a configurable cadence
+- 🧠 **Background jobs** — alert polling, watchlist updates, news drops, and the daily digest all run automatically
 - 🔒 **Secrets-safe** — all keys live in `.env`, never committed to git
 - 🪶 **Clean module split** — realtime layer, data fetchers, and bot logic kept separate
 
@@ -51,13 +53,18 @@ trade-alert-bot/
 │   ├── handlers.py         # Telegram command & message handlers
 │   ├── alerts.py           # Alert model (price + percent) & store
 │   ├── watchlist.py        # Per-user watchlist store
-│   ├── jobs.py             # Background jobs: polling, updates, daily digest
+│   ├── subscribers.py      # Opt-in store for news & liquidation alerts
+│   ├── news.py             # Seen-news dedup + digest formatting
+│   ├── liquidations.py     # Liquidation routing & message formatting
+│   ├── jobs.py             # Background jobs: polling, updates, news, digest
 │   ├── summary.py          # Shared watchlist-summary message builder
 │   └── util.py             # Shared formatting helpers
 ├── data/
 │   ├── __init__.py
 │   ├── fetcher.py          # Crypto (Binance) + forex (Yahoo) fetchers
-│   ├── realtime.py         # Binance WebSocket realtime manager
+│   ├── realtime.py         # Binance WebSocket price manager
+│   ├── liquidations.py     # Binance WebSocket liquidation watcher
+│   ├── news.py             # RSS news aggregator
 │   ├── pricecache.py       # In-memory latest-price cache
 │   └── symbols.py          # Symbol normalization & validation
 ├── config.py               # Loads .env and exposes settings
@@ -123,6 +130,7 @@ POLL_INTERVAL_SECONDS=60      # how often alerts are checked
 WATCHLIST_UPDATE_INTERVAL=300 # how often watchlist prices are broadcast
 DAILY_SUMMARY_TIME=09:00      # daily digest time, "HH:MM" (blank = off)
 CACHE_TTL_SECONDS=30          # freshness window for cached realtime prices
+NEWS_DROP_INTERVAL=600        # how often new RSS headlines are pushed
 ALLOWED_USER_IDS=             # comma-separated Telegram user IDs (blank = allow everyone)
 ```
 
@@ -152,6 +160,10 @@ Open your bot on Telegram, press **Start**, and try the commands below.
 | `/watchlist` | Show your watchlist with live prices | `/watchlist` |
 | `/clearwatch` | Empty your watchlist | `/clearwatch` |
 | `/summary` | Send a watchlist summary right now | `/summary` |
+| `/news` | Latest crypto headlines now | `/news` |
+| `/newsauto on\|off` | Turn automatic news drops on/off | `/newsauto on` |
+| `/liqalert <USD>` | Alert on liquidations worth ≥ USD | `/liqalert 100000` |
+| `/liqalert off` | Stop liquidation alerts | `/liqalert off` |
 
 ### Examples
 
@@ -162,6 +174,9 @@ Open your bot on Telegram, press **Start**, and try the commands below.
 /alert EURUSD above 1.10
 /alert BTCUSDT up 5%            → fires when BTC rises 5% from creation
 /watch BTCUSDT ETHUSDT EURUSD   → tracked + streamed (crypto) / polled (forex)
+/news                          → latest headlines right now
+/newsauto on                   → auto news drops from then on (no command needed)
+/liqalert 100000               → pinged on any liquidation worth ≥ $100k, live
 ```
 
 ---
