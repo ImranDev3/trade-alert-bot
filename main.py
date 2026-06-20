@@ -25,6 +25,7 @@ try:
     from bot.handlers import build_handlers
     from bot.jobs import (
         schedule_daily_summary,
+        schedule_liquidation_digest,
         schedule_news_drops,
         schedule_polling,
         schedule_watchlist_updates,
@@ -35,7 +36,7 @@ try:
     from bot.watchlist import WatchlistStore
     from config import settings
     from data import fetcher
-    from data.liquidations import LiquidationWatcher
+    from data.liquidations import LiquidationBuffer, LiquidationWatcher
     from data.pricecache import PriceCache
     from data.realtime import BinanceRealtimeManager
 except RuntimeError as exc:
@@ -105,8 +106,14 @@ def main() -> int:
         schedule_daily_summary(application, watchlist, settings.daily_summary_time)
 
     # ---- large-liquidation watcher (separate Binance WS stream) ----
-    liq_handler = build_liquidation_handler(application.bot, subscribers)
+    # Events stream into a buffer; a per-minute digest job drains it and sends
+    # each subscriber a "how much was liquidated this minute" summary.
+    liq_buffer = LiquidationBuffer(window_seconds=settings.liquidation_digest_interval)
+    liq_handler = build_liquidation_handler(liq_buffer)
     liq_watcher = LiquidationWatcher(liq_handler)
+    schedule_liquidation_digest(
+        application, liq_buffer, subscribers, settings.liquidation_digest_interval
+    )
 
     # ---- start the realtime WebSockets on the bot's event loop ----
     # run_polling manages its own loop, so we hook post_init to start WS once

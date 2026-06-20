@@ -61,6 +61,8 @@ class Settings:
     cache_ttl_seconds: int = 30
     # How often (seconds) the news auto-drop job pulls fresh RSS headlines.
     news_drop_interval: int = 60
+    # How often (seconds) the liquidation digest is sent (recheck cadence).
+    liquidation_digest_interval: int = 60
 
     @property
     def auth_enabled(self) -> bool:
@@ -88,6 +90,7 @@ def load_settings() -> Settings:
         daily_summary_time=_get_str("DAILY_SUMMARY_TIME", ""),
         cache_ttl_seconds=_get_int("CACHE_TTL_SECONDS", 30),
         news_drop_interval=_get_int("NEWS_DROP_INTERVAL", 60),
+        liquidation_digest_interval=_get_int("LIQUIDATION_DIGEST_INTERVAL", 60),
     )
 
 

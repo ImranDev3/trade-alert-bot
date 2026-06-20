@@ -20,7 +20,7 @@
 - 👀 **Watchlists** — track a set of symbols; the bot broadcasts their live prices on a schedule and streams the crypto ones over WebSocket
 - 🗓️ **Daily market summary** — a once-a-day digest of your watchlist at a time you choose
 - 📰 **Auto news drops (important only)** — opt in and the bot pushes the headlines that actually matter, from Cointelegraph, CoinDesk, Decrypt & Bitcoin News. Each user only gets headlines that score as important — high-signal topics (ETF, SEC, hacks, crashes, listings, partnerships…) **or** mention a symbol on their watchlist. Dedup ensures nothing repeats
-- 💥 **Large-liquidation alerts** — set a USD threshold and the bot pings you the moment a forced liquidation worth that much hits Binance (long/short, size, price), streamed live
+- 💥 **Large-liquidation alerts (per-minute recheck)** — set a USD threshold and every minute the bot sends you a digest of how much was liquidated on Binance in the last minute (total $, longs vs shorts, plus any events above your threshold), streamed live
 - 🧾 **Alert management** — list, inspect, and remove your active alerts
 - ⚡ **On-demand quotes** — fetch the current price of any supported symbol instantly
 - 🧠 **Background jobs** — alert polling, watchlist updates, news drops, and the daily digest all run automatically
@@ -131,7 +131,8 @@ POLL_INTERVAL_SECONDS=60      # how often alerts are checked
 WATCHLIST_UPDATE_INTERVAL=300 # how often watchlist prices are broadcast
 DAILY_SUMMARY_TIME=09:00      # daily digest time, "HH:MM" (blank = off)
 CACHE_TTL_SECONDS=30          # freshness window for cached realtime prices
-NEWS_DROP_INTERVAL=600        # how often new RSS headlines are pushed
+NEWS_DROP_INTERVAL=60         # how often important headlines are pushed (1 min)
+LIQUIDATION_DIGEST_INTERVAL=60 # how often liquidation digests are sent (1 min)
 ALLOWED_USER_IDS=             # comma-separated Telegram user IDs (blank = allow everyone)
 ```
 

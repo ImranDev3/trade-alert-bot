@@ -262,6 +262,20 @@ def schedule_news_drops(application, news_store, subscribers, interval_seconds: 
     log.info("Scheduled news auto-drop every %ds (importance-filtered)", interval_seconds)
 
 
+def schedule_liquidation_digest(application, buffer, subscribers, interval_seconds: int) -> None:
+    """Register the periodic liquidation-digest job (per-minute recheck)."""
+    from bot.liquidations import build_liquidation_digest_callback
+
+    callback = build_liquidation_digest_callback(buffer, subscribers)
+    application.job_queue.run_repeating(
+        callback,
+        interval=interval_seconds,
+        first=interval_seconds,
+        name="liquidation_digest",
+    )
+    log.info("Scheduled liquidation digest every %ds", interval_seconds)
+
+
 # Re-exported so callers can type-hint without importing telegram.ext directly.
 __all__ = [
     "build_poll_callback",
@@ -272,4 +286,5 @@ __all__ = [
     "schedule_daily_summary",
     "build_news_drop_callback",
     "schedule_news_drops",
+    "schedule_liquidation_digest",
 ]
