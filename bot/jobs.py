@@ -16,27 +16,18 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from bot.alerts import Alert, AlertStore, check
+from bot.util import format_price, symbol_label
 from data.fetcher import fetch_price_or_none
 from data.symbols import parse_symbol
 
 log = logging.getLogger(__name__)
 
 
-def _format_price(symbol: str, price: float) -> str:
-    """Pick a sensible number of decimals for display (forex vs crypto)."""
-    if price >= 1000:
-        return f"{price:,.2f}"
-    if price >= 1:
-        return f"{price:,.4f}"
-    return f"{price:,.8f}".rstrip("0").rstrip(".")
-
-
 def _alert_message(alert: Alert, price: float) -> str:
     """The Telegram message body sent when an alert fires."""
-    sym = parse_symbol(alert.symbol)
-    label = sym.display if sym else alert.symbol
-    price_str = _format_price(alert.symbol, price)
-    target_str = _format_price(alert.symbol, alert.target_price)
+    label = symbol_label(alert.symbol)
+    price_str = format_price(price)
+    target_str = format_price(alert.target_price)
     arrow = "⬆️ crossed above" if alert.direction.value == "above" else "⬇️ crossed below"
     return (
         f"🔔 <b>Alert #{alert.id} triggered</b>\n\n"
