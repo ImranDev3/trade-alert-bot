@@ -1,0 +1,8 @@
+# Core bot framework (async, long-polling)
+python-telegram-bot==21.6
+
+# HTTP client for market data APIs
+requests==2.32.3
+
+# .env configuration
+python-dotenv==1.0.1
