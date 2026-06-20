@@ -1,5 +1,6 @@
-# Core bot framework (async, long-polling)
-python-telegram-bot==21.6
+# Core bot framework (async, long-polling) with the JobQueue extra,
+# needed for the background alert-polling job.
+python-telegram-bot[job-queue]==21.6
 
 # HTTP client for market data APIs
 requests==2.32.3
