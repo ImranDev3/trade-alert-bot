@@ -15,9 +15,9 @@ import logging
 from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
-from bot.alerts import Alert, AlertStore, check
+from bot.alerts import Alert, AlertKind, AlertStore, check
 from bot.summary import build_price_block
-from bot.util import format_price, symbol_label
+from bot.util import format_percent, format_price, pct_emoji, symbol_label
 from data.fetcher import fetch_price_or_none
 from data.symbols import parse_symbol
 
@@ -28,8 +28,22 @@ def _alert_message(alert: Alert, price: float) -> str:
     """The Telegram message body sent when an alert fires."""
     label = symbol_label(alert.symbol)
     price_str = format_price(price)
-    target_str = format_price(alert.target_price)
     arrow = "⬆️ crossed above" if alert.direction.value == "above" else "⬇️ crossed below"
+
+    if alert.kind is AlertKind.PERCENT:
+        change = alert.change_percent(price)
+        base_str = format_price(alert.baseline)
+        return (
+            f"🔔 <b>Alert #{alert.id} triggered</b>\n\n"
+            f"<b>{label}</b> has moved {pct_emoji(change)} <b>{format_percent(change)}</b> "
+            f"from your baseline.\n\n"
+            f"Baseline: <code>{base_str}</code>\n"
+            f"Current price: <code>{price_str}</code>\n"
+            f"Threshold: <b>{alert.pct:.2f}%</b> {alert.direction.value}\n\n"
+            f"Alert removed. Create a new one with /alert."
+        )
+
+    target_str = format_price(alert.target_price)
     return (
         f"🔔 <b>Alert #{alert.id} triggered</b>\n\n"
         f"<b>{label}</b> has {arrow} your target.\n\n"

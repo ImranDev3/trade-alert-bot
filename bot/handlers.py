@@ -17,7 +17,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
-from bot.alerts import AlertStore, Direction
+from bot.alerts import AlertKind, AlertStore, Direction
 from bot.util import format_price, kind_emoji, symbol_label
 from bot.watchlist import WatchlistStore
 from config import settings
@@ -126,36 +126,71 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
         if len(args) != 3:
             await _reply(
                 update,
-                "Usage: <code>/alert &lt;SYMBOL&gt; &lt;above|below&gt; &lt;PRICE&gt;</code>\n"
-                "Example: <code>/alert BTCUSDT above 70000</code>",
+                "Usage:\n"
+                "<code>/alert &lt;SYMBOL&gt; &lt;above|below&gt; &lt;PRICE&gt;</code>  (price level)\n"
+                "<code>/alert &lt;SYMBOL&gt; &lt;up|down|change&gt; &lt;PERCENT%&gt;</code>  (move alert)\n\n"
+                "Examples:\n"
+                "<code>/alert BTCUSDT above 70000</code>\n"
+                "<code>/alert BTCUSDT up 5%</code>",
             )
             return
 
         sym = parse_symbol(args[0])
         direction = Direction.parse(args[1])
-        try:
-            target = float(args[2])
-        except ValueError:
-            target = None
+        kind = AlertKind.parse(args[1])
+
+        # A trailing '%' on the value also implies a percent alert, even when
+        # the direction word is a plain up/down/above/below (e.g. "up 5%").
+        if kind is None and "%" in args[2]:
+            kind = AlertKind.PERCENT
 
         if sym is None:
             await _reply(update, f"❌ Invalid symbol: <code>{args[0]}</code>")
             return
         if direction is None:
-            await _reply(update, f"❌ Direction must be <b>above</b> or <b>below</b>, got <code>{args[1]}</code>")
-            return
-        if target is None or target <= 0:
-            await _reply(update, f"❌ Price must be a positive number, got <code>{args[2]}</code>")
+            await _reply(update, f"❌ Direction must be <b>above/below</b> or <b>up/down/change</b>, got <code>{args[1]}</code>")
             return
 
-        created = store.add(update.effective_user.id, sym.normalized, direction, target)
-        await _reply(
-            update,
-            f"✅ Alert #{created.id} created\n"
-            f"{kind_emoji(sym.normalized)} <b>{sym.display}</b> {direction.value} "
-            f"<code>{format_price(target)}</code>\n\n"
-            f"I'll ping you when the price crosses this level.",
-        )
+        value_text = args[2].replace("%", "")
+        try:
+            value = float(value_text)
+        except ValueError:
+            await _reply(update, f"❌ Value must be a number, got <code>{args[2]}</code>")
+            return
+
+        if kind is AlertKind.PERCENT:
+            if value <= 0:
+                await _reply(update, f"❌ Percentage must be positive, got <code>{args[2]}</code>")
+                return
+            # 'change' means either direction; default to ABOVE and watch abs move.
+            move_dir = direction if direction in (Direction.ABOVE, Direction.BELOW) else Direction.ABOVE
+            baseline = fetch_price_or_none(sym)
+            if baseline is None:
+                await _reply(update, f"❌ Couldn't fetch current {sym.display} price to set a baseline.")
+                return
+            created = store.add(
+                update.effective_user.id, sym.normalized, move_dir,
+                kind=AlertKind.PERCENT, pct=value, baseline=baseline,
+            )
+            await _reply(
+                update,
+                f"✅ Alert #{created.id} created\n"
+                f"{kind_emoji(sym.normalized)} <b>{sym.display}</b> {move_dir.value} "
+                f"<code>{value:.2f}%</code> from <code>{format_price(baseline)}</code>\n\n"
+                f"I'll ping you when the price moves that much.",
+            )
+        else:
+            if value <= 0:
+                await _reply(update, f"❌ Price must be a positive number, got <code>{args[2]}</code>")
+                return
+            created = store.add(update.effective_user.id, sym.normalized, direction, value)
+            await _reply(
+                update,
+                f"✅ Alert #{created.id} created\n"
+                f"{kind_emoji(sym.normalized)} <b>{sym.display}</b> {direction.value} "
+                f"<code>{format_price(value)}</code>\n\n"
+                f"I'll ping you when the price crosses this level.",
+            )
 
     @_auth_only
     async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -165,10 +200,17 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore) -> list:
             return
         lines = [f"📋 <b>Your alerts ({len(user_alerts)})</b>"]
         for a in user_alerts:
-            lines.append(
-                f"#{a.id}  {kind_emoji(a.symbol)} <b>{symbol_label(a.symbol)}</b> "
-                f"{a.direction.value} <code>{format_price(a.target_price)}</code>"
-            )
+            if a.kind is AlertKind.PERCENT:
+                lines.append(
+                    f"#{a.id}  {kind_emoji(a.symbol)} <b>{symbol_label(a.symbol)}</b> "
+                    f"{a.direction.value} <code>{a.pct:.2f}%</code> from "
+                    f"<code>{format_price(a.baseline)}</code>"
+                )
+            else:
+                lines.append(
+                    f"#{a.id}  {kind_emoji(a.symbol)} <b>{symbol_label(a.symbol)}</b> "
+                    f"{a.direction.value} <code>{format_price(a.target_price)}</code>"
+                )
         await _reply(update, "\n".join(lines))
 
     @_auth_only
