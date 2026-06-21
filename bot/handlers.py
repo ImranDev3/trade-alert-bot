@@ -297,8 +297,10 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) ->
         if not articles:
             await _reply(update, "📭 Couldn't fetch any news headlines right now. Try again later.")
             return
-        digest = build_news_digest(articles[:8], "📰 <b>Latest crypto news</b>", limit=8)
-        await _reply(update, digest)
+        text, reply_markup = build_news_digest(articles[:8], limit=8)
+        msg = update.effective_message
+        if msg is not None:
+            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     @_auth_only
     async def newsauto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

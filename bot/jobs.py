@@ -225,15 +225,14 @@ def build_news_drop_callback(news_store, subscribers, watchlist=None, sources=No
             important = filter_important(new_articles, wl, keyword_threshold=keyword_threshold)
             if not important:
                 continue
-            digest = build_news_digest(
-                important, "📰 <b>Important crypto news</b>", limit=per_drop
-            )
+            digest, reply_markup = build_news_digest(important, limit=per_drop)
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=digest,
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
+                    reply_markup=reply_markup,
                 )
                 sent_total += 1
             except Exception as exc:  # noqa: BLE001
