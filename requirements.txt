@@ -9,5 +9,8 @@ requests==2.32.3
 # WebSocket client for realtime Binance crypto prices
 websockets==16.0
 
+# Free Google Translate wrapper (used to localise news into Bangla)
+deep-translator==1.11.4
+
 # .env configuration
 python-dotenv==1.0.1
