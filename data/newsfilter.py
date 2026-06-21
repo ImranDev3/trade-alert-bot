@@ -30,7 +30,7 @@ _IMPORTANT_KEYWORDS: list[tuple[str, int]] = [
     (r"\bpump\b", 1), (r"\bdump\b", 2), (r"\bselloff\b", 2), (r"\bliquidat", 2),
     # Security
     (r"\bhack", 3), (r"\bexploit\b", 3), (r"\bbreach\b", 2), (r"\bdrain", 3),
-    (r"\bdefect\b", 1), (r"\bvulnerab", 2),
+    (r"\bdefect\b", 1), (r"\bvulnerab", 2), (r"\battack\b", 2), (r"\bstolen\b", 2),
     # Key events
     (r"\bETF\b", 3), (r"\bhalving\b", 3), (r"\bairdrop\b", 2),
     (r"\bpartnership\b", 2), (r"\blisting\b", 2), (r"\blaunch", 2),
@@ -140,3 +140,62 @@ def filter_important(
         a for a in articles
         if is_important(a, watchlist_symbols, keyword_threshold)
     ]
+
+
+# Critical-tier keywords: a headline that mentions *any* of these (with the
+# matching weight summed) is treated as a "block-level" event that the user
+# almost certainly wants to know about immediately — ETF approvals, hacks,
+# regulator action, market shocks. These are stricter than the "important"
+# tier on purpose: we'd rather over-page on a real event than miss it.
+_CRITICAL_KEYWORDS: list[tuple[str, int]] = [
+    # Regulation / legal (hard blocks)
+    (r"\bSEC\b.*(approv|reject|charge|file)", 4),
+    (r"\bSEC\b", 3),
+    (r"\bETF\b.*(approv|reject|launch|delay)", 4),
+    (r"\bETF\b", 3),
+    (r"\bban\b", 4),
+    (r"\bsanction", 4),
+    (r"\bDOJ\b", 3),
+    (r"\blawsuit\b.*(SEC|crypto|Bitcoin|Ethereum)", 3),
+    # Security
+    (r"\bhack\b.*\$\d", 4),  # "$X hack"
+    (r"\bexploit\b.*\$\d", 4),
+    (r"\bbreach\b.*\$\d", 4),
+    (r"\bdrain", 4),
+    (r"\b(hack|exploit|breach|attack)\b.*\b(user|wallet|customer|funds?|million|billion)", 4),
+    (r"\b(vulnerab|exploit|attack).*found", 3),
+    # Market shocks
+    (r"\bcrash", 4),
+    (r"\bplunge", 4),
+    (r"\bselloff\b.*(market|wall|street|bitcoin|crypto)", 3),
+    (r"\bliquidat", 3),
+    # Major milestones
+    (r"\bATH\b", 3),
+    (r"all[-\s]?time high", 2),
+    (r"\btrillion\b", 4),
+]
+_COMPILED_CRITICAL = [(re.compile(pat, re.IGNORECASE), w) for pat, w in _CRITICAL_KEYWORDS]
+
+# Minimum score to be classified as critical. Picked so simple mentions of
+# "ETF" alone still hit the important tier, but a "SEC approves ETF" pairing
+# (4 + 3 = 7) blows past it.
+CRITICAL_THRESHOLD = 4
+
+
+def is_critical(article: Article) -> bool:
+    """Return True if *article* is a block-level headline the user must see.
+
+    Used to flag stories that get an extra-loud delivery (sound on, repeated
+    if unacknowledged) in addition to the regular important digest.
+    """
+    title = article.title or ""
+    score = 0
+    for pattern, weight in _COMPILED_CRITICAL:
+        if pattern.search(title):
+            score += weight
+    return score >= CRITICAL_THRESHOLD
+
+
+def filter_critical(articles: list[Article]) -> list[Article]:
+    """Keep only the critical headlines from *articles*."""
+    return [a for a in articles if is_critical(a)]
