@@ -24,6 +24,7 @@ try:
     from bot.alerts import AlertStore
     from bot.handlers import build_handlers
     from bot.jobs import (
+        schedule_critical_alerts,
         schedule_daily_summary,
         schedule_liquidation_digest,
         schedule_news_drops,
@@ -33,6 +34,7 @@ try:
     from bot.liquidations import build_liquidation_handler
     from bot.news import NewsStore
     from bot.subscribers import SubscriberStore
+    from bot.ackstore import AckStore
     from bot.watchlist import WatchlistStore
     from config import settings
     from data import fetcher
@@ -49,6 +51,7 @@ _ALERTS_FILE = os.path.join(_STORE_DIR, "alerts.json")
 _WATCHLIST_FILE = os.path.join(_STORE_DIR, "watchlists.json")
 _SUBS_FILE = os.path.join(_STORE_DIR, "subscribers.json")
 _NEWS_SEEN_FILE = os.path.join(_STORE_DIR, "seen_news.json")
+_ACKS_FILE = os.path.join(_STORE_DIR, "acks.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +83,7 @@ def main() -> int:
         auto_subscribe_all=settings.news_auto_subscribe_all,
     )
     news_store = NewsStore(persist_path=_NEWS_SEEN_FILE)
+    ack_store = AckStore(persist_path=_ACKS_FILE)
 
     # ---- realtime layer (Binance WS feeding a price cache) ----
     cache = PriceCache(ttl_seconds=settings.cache_ttl_seconds)
@@ -95,7 +99,7 @@ def main() -> int:
     )
 
     # ---- Telegram command handlers ----
-    for handler in build_handlers(store, watchlist, subscribers):
+    for handler in build_handlers(store, watchlist, subscribers, ack_store):
         application.add_handler(handler)
 
     # ---- background jobs ----
@@ -104,6 +108,10 @@ def main() -> int:
     schedule_news_drops(
         application, news_store, subscribers,
         settings.news_drop_interval, watchlist=watchlist,
+    )
+    schedule_critical_alerts(
+        application, news_store, subscribers, ack_store,
+        settings.news_drop_interval,
     )
     if settings.daily_summary_time:
         schedule_daily_summary(application, watchlist, settings.daily_summary_time)
