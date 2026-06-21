@@ -275,6 +275,91 @@ def schedule_liquidation_digest(application, buffer, subscribers, interval_secon
     log.info("Scheduled liquidation digest every %ds", interval_seconds)
 
 
+def build_critical_alert_callback(news_store, subscribers, ack_store):
+    """Return a job callback that LOUDLY pushes critical headlines + a 'Got it'
+    button, and re-pings every interval until the user acknowledges.
+
+    Strategy:
+    1. Fetch all sources.
+    2. Keep the unseen AND critical articles.
+    3. For each subscriber, send a separate sound-on message per critical
+       article with an inline "Got it" keyboard.
+    4. Track acks via *ack_store* so the repeat-after-send job stops pinging
+       acknowledged ones.
+    5. Mark the article seen (in the global news_store) once any user
+       receives it, so we don't keep reprocessing the same headline.
+
+    Returns the inner async function. *subscribers* and *ack_store* are
+    captured in the closure.
+    """
+    from telegram.constants import ParseMode
+    from bot.news import build_news_digest
+    from data.news import fetch_all
+    from data.newsfilter import filter_critical
+
+    async def critical_alert(context) -> None:
+        articles = fetch_all()
+        new_articles = news_store.filter_unseen(articles)
+        critical = filter_critical(new_articles)
+        if not critical:
+            return
+
+        # Send one loud, sound-on message per critical article per subscriber.
+        for art in critical:
+            text, _ = build_news_digest(
+                [art],
+                header="🚨 <b>গুরুত্বপূর্ণ ব্রেকিং নিউজ</b>",
+                limit=1,
+                accent="🔴",
+                subtitle=None,  # keep it minimal
+            )
+            # Inline "Got it" button — acks the article and stops the repeats.
+            try:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                # Telegram caps callback_data at 64 bytes; trim the link down
+                # to fit, and keep the rest in the article itself.
+                cb_data = "ack:" + art.link[:55]
+                keyboard = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(text="✅ Got it", callback_data=cb_data)]]
+                )
+            except ImportError:
+                keyboard = None
+
+            for user_id in subscribers.news_subscribers():
+                if ack_store.is_acked(user_id, art.link):
+                    continue
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                        reply_markup=keyboard,
+                        # disable_notification=False is the default; being explicit
+                        # so future readers see we WANT a sound here.
+                        disable_notification=False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Could not send critical alert to %s: %s", user_id, exc)
+            # Mark seen globally so the regular digest doesn't double-fire it.
+            news_store.mark_seen([art])
+            log.info("Critical alert sent: %s", art.title[:60])
+
+    return critical_alert
+
+
+def schedule_critical_alerts(application, news_store, subscribers, ack_store, interval_seconds: int) -> None:
+    """Register the critical-alert job (re-pings un-acked headlines)."""
+    callback = build_critical_alert_callback(news_store, subscribers, ack_store)
+    application.job_queue.run_repeating(
+        callback,
+        interval=interval_seconds,
+        first=interval_seconds,
+        name="critical_alerts",
+    )
+    log.info("Scheduled critical-alert loop every %ds (until acked)", interval_seconds)
+
+
 # Re-exported so callers can type-hint without importing telegram.ext directly.
 __all__ = [
     "build_poll_callback",
@@ -286,4 +371,6 @@ __all__ = [
     "build_news_drop_callback",
     "schedule_news_drops",
     "schedule_liquidation_digest",
+    "build_critical_alert_callback",
+    "schedule_critical_alerts",
 ]

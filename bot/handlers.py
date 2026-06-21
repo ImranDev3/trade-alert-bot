@@ -15,7 +15,13 @@ from collections.abc import Awaitable, Callable
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from bot.alerts import AlertKind, AlertStore, Direction
 from bot.news import build_news_digest
@@ -104,10 +110,12 @@ def _auth_only(func: Handler) -> Handler:
     return wrapper
 
 
-def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) -> list:
+def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers, ack_store=None) -> list:
     """Return the list of handlers to register, closing over the shared stores."""
     # Stash a reference for the _auth_only decorator to call remember_user().
     build_handlers._subs = subscribers  # type: ignore[attr-defined]
+    # Stash the ack store for the callback query handler.
+    build_handlers._acks = ack_store  # type: ignore[attr-defined]
 
     @_auth_only
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -360,6 +368,31 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) ->
     async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _reply(update, "🤔 I didn't understand that. Send /help to see what I can do.")
 
+    async def on_ack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline-button "Got it" taps on critical-alert messages.
+
+        Callback data is ``ack:<url>`` (URL might be long; Telegram caps
+        callback_data at 64 bytes, so we keep it simple — first 60 chars of
+        the link). When the user acks, we record it and acknowledge the
+        toast so Telegram dismisses the spinner.
+        """
+        query = update.callback_query
+        if query is None or query.data is None:
+            return
+        acks = build_handlers._acks  # type: ignore[attr-defined]
+        if acks is None:
+            await query.answer()
+            return
+        user = query.from_user
+        link = query.data[len("ack:") :]
+        acks.acknowledge(user.id, link)
+        await query.answer("✅ Acknowledged — I'll stop pinging you about this one.")
+        # Try to update the original message so the user sees a "seen" state.
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+
     return [
         CommandHandler("start", start),
         CommandHandler("help", help_cmd),
@@ -375,5 +408,6 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) ->
         CommandHandler("news", news),
         CommandHandler("newsauto", newsauto),
         CommandHandler("liqalert", liqalert),
+        CallbackQueryHandler(on_ack_callback, pattern=r"^ack:"),
         MessageHandler(filters.COMMAND, unknown),
     ]
