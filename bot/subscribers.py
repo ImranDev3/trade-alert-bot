@@ -99,10 +99,13 @@ class SubscriberStore:
         """List of user IDs that should receive the next auto-drop.
 
         In opt-in mode: just the explicit opt-ins.
-        In opt-out mode: every known user, minus the opt-outs.
+        In opt-out mode: every known user, minus the opt-outs, plus any
+        pre-existing explicit opt-ins (backwards compatibility with files
+        written before the opt-out model existed).
         """
         if self._auto_all:
-            return sorted(self._known_users - self._news_opt_out)
+            eligible = self._known_users | self._news_opt_in
+            return sorted(eligible - self._news_opt_out)
         return sorted(self._news_opt_in)
 
     def is_news_subscribed(self, user_id: int) -> bool:
