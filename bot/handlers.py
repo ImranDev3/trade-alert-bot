@@ -46,7 +46,7 @@ HELP_TEXT = (
     "/clearwatch — empty your watchlist\n"
     "/summary — send your watchlist summary now\n\n"
     "/news — latest crypto headlines now\n"
-    "/newsauto on|off — turn automatic news drops on/off\n"
+    "/newsauto on|off — toggle auto news drops (you start subscribed)\n"
     "/liqalert &lt;USD&gt; — alert on liquidations worth ≥ this amount\n"
     "/liqalert off — stop liquidation alerts\n"
     "/help — show this message\n\n"
@@ -82,7 +82,11 @@ async def _noop() -> None:
 
 
 def _auth_only(func: Handler) -> Handler:
-    """Decorator that blocks users outside the configured allow-list."""
+    """Decorator that blocks users outside the configured allow-list.
+
+    Also tracks every authorized user in the subscriber store so the news
+    auto-drop (opt-out mode) reaches them without an explicit /newsauto on.
+    """
 
     @functools.wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,6 +94,11 @@ def _auth_only(func: Handler) -> Handler:
         if user is None or not settings.is_allowed(user.id):
             await _reply(update, "🚫 You are not authorized to use this bot.")
             return
+        # Track the user so the news auto-drop can include them. `subscribers`
+        # is bound at build_handlers call time (closure); accessing it before
+        # that would NameError, but every handler built via build_handlers
+        # has it available.
+        build_handlers._subs.remember_user(user.id)  # type: ignore[attr-defined]
         await func(update, context)
 
     return wrapper
@@ -97,6 +106,8 @@ def _auth_only(func: Handler) -> Handler:
 
 def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) -> list:
     """Return the list of handlers to register, closing over the shared stores."""
+    # Stash a reference for the _auth_only decorator to call remember_user().
+    build_handlers._subs = subscribers  # type: ignore[attr-defined]
 
     @_auth_only
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -291,20 +302,23 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers) ->
 
     @_auth_only
     async def newsauto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Turn automatic news drops on/off for the caller."""
-        arg = (context.args[0] if context.args else "on").strip().lower()
+        """Show the current state and let the caller toggle the auto-drop."""
+        arg = (context.args[0] if context.args else "").strip().lower()
         uid = update.effective_user.id
+        is_subbed = subscribers.is_news_subscribed(uid)
+
         if arg in ("off", "stop", "no", "0"):
             if subscribers.unsubscribe_news(uid):
-                await _reply(update, "🔕 Auto news drops turned <b>off</b>.")
+                await _reply(update, "🔕 Auto news drops turned <b>off</b>.\nYou won't receive any more auto headlines.")
             else:
-                await _reply(update, "Auto news was already off.")
+                await _reply(update, "🔕 Auto news drops are already <b>off</b> for you.")
             return
         if arg in ("on", "start", "yes", "1", ""):
             if subscribers.subscribe_news(uid):
-                await _reply(update, "✅ Auto news drops turned <b>on</b>.\nI'll push new headlines to you automatically.")
+                await _reply(update, "✅ Auto news drops turned <b>on</b>.\nYou'll receive the most important crypto headlines as they break.")
             else:
-                await _reply(update, "Auto news is already on.")
+                state = "on" if is_subbed else "off"
+                await _reply(update, f"Auto news drops are already <b>{state}</b> for you.")
             return
         await _reply(update, "Usage: <code>/newsauto on</code>  or  <code>/newsauto off</code>")
 

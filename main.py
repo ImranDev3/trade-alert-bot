@@ -75,7 +75,10 @@ def main() -> int:
     # ---- shared mutable state ----
     store = AlertStore(persist_path=_ALERTS_FILE)
     watchlist = WatchlistStore(persist_path=_WATCHLIST_FILE)
-    subscribers = SubscriberStore(persist_path=_SUBS_FILE)
+    subscribers = SubscriberStore(
+        persist_path=_SUBS_FILE,
+        auto_subscribe_all=settings.news_auto_subscribe_all,
+    )
     news_store = NewsStore(persist_path=_NEWS_SEEN_FILE)
 
     # ---- realtime layer (Binance WS feeding a price cache) ----

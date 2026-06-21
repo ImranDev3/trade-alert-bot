@@ -24,38 +24,89 @@ MIN_LIQ_THRESHOLD = 5_000.0
 
 
 class SubscriberStore:
-    """Persistent opt-in state for news and liquidation alerts."""
+    """Persistent opt-in state for news and liquidation alerts.
 
-    def __init__(self, persist_path: str | None = None) -> None:
-        self._news: set[int] = set()
-        self._liq: dict[int, float] = {}  # user_id -> USD threshold
+    News operates in two modes, selected at construction time via
+    *auto_subscribe_all*:
+
+    * **opt-in** (default, ``auto_subscribe_all=False``) — only users who
+      explicitly ran ``/newsauto on`` get the auto-drops.
+    * **opt-out** (``auto_subscribe_all=True``) — every user the bot has
+      ever seen gets auto-drops by default; running ``/newsauto off``
+      removes them. This is the user-friendly default once the bot is
+      deployed to a small, known audience.
+    """
+
+    def __init__(self, persist_path: str | None = None, auto_subscribe_all: bool = False) -> None:
+        self._news_opt_in: set[int] = set()      # explicit opt-ins (used in opt-in mode)
+        self._news_opt_out: set[int] = set()     # explicit opt-outs (used in opt-out mode)
+        self._known_users: set[int] = set()      # anyone who has ever messaged
+        self._liq: dict[int, float] = {}         # user_id -> USD threshold
         self._path = persist_path
+        self._auto_all = auto_subscribe_all
         if persist_path and os.path.exists(persist_path):
             self._load()
+
+    # ---- user tracking (for opt-out mode) ----
+
+    def remember_user(self, user_id: int) -> None:
+        """Note that *user_id* has interacted with the bot.
+
+        In opt-out mode this is what makes them eligible for the news drop.
+        Always persisted so a restart doesn't drop them from the next tick.
+        """
+        if user_id in self._known_users:
+            return
+        self._known_users.add(user_id)
+        self._save()
+
+    def known_users(self) -> list[int]:
+        return sorted(self._known_users)
 
     # ---- news ----
 
     def subscribe_news(self, user_id: int) -> bool:
-        """Opt *user_id* into auto news drops. Returns True if newly added."""
-        if user_id in self._news:
+        """Opt *user_id* in (opt-in mode) or back in (opt-out mode)."""
+        if self._auto_all:
+            # In opt-out mode "subscribe" really means "remove from opt-outs",
+            # so the user is again eligible for the auto-drop.
+            if user_id not in self._news_opt_out:
+                return False
+            self._news_opt_out.discard(user_id)
+            self._save()
+            return True
+        if user_id in self._news_opt_in:
             return False
-        self._news.add(user_id)
+        self._news_opt_in.add(user_id)
         self._save()
         return True
 
     def unsubscribe_news(self, user_id: int) -> bool:
-        """Opt *user_id* out of news drops. Returns True if it was subscribed."""
-        if user_id not in self._news:
+        """Opt *user_id* out of news drops. Returns True if the state changed."""
+        if self._auto_all:
+            if user_id in self._news_opt_out:
+                return False
+            self._news_opt_out.add(user_id)
+            self._save()
+            return True
+        if user_id not in self._news_opt_in:
             return False
-        self._news.discard(user_id)
+        self._news_opt_in.discard(user_id)
         self._save()
         return True
 
     def news_subscribers(self) -> list[int]:
-        return sorted(self._news)
+        """List of user IDs that should receive the next auto-drop.
+
+        In opt-in mode: just the explicit opt-ins.
+        In opt-out mode: every known user, minus the opt-outs.
+        """
+        if self._auto_all:
+            return sorted(self._known_users - self._news_opt_out)
+        return sorted(self._news_opt_in)
 
     def is_news_subscribed(self, user_id: int) -> bool:
-        return user_id in self._news
+        return user_id in self.news_subscribers()
 
     # ---- liquidations ----
 
@@ -91,7 +142,11 @@ class SubscriberStore:
             return
         os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
         payload = {
-            "news": sorted(self._news),
+            "auto_subscribe_all": self._auto_all,
+            # Backwards-compat alias — old single "news" list is treated as opt-in.
+            "news": sorted(self._news_opt_in),
+            "news_opt_out": sorted(self._news_opt_out),
+            "known_users": sorted(self._known_users),
             "liquidations": {str(k): v for k, v in self._liq.items()},
         }
         tmp = self._path + ".tmp"
@@ -106,8 +161,15 @@ class SubscriberStore:
         except (OSError, json.JSONDecodeError) as exc:
             log.warning("Could not load subscriptions from %s: %s", self._path, exc)
             return
-        self._news = {int(x) for x in payload.get("news", []) if str(x).isdigit()}
+        # Older single "news" list -> opt-in. Newer file has separate opt_out/known.
+        self._news_opt_in = {int(x) for x in payload.get("news", []) if str(x).isdigit()}
+        self._news_opt_out = {int(x) for x in payload.get("news_opt_out", []) if str(x).isdigit()}
+        self._known_users = {int(x) for x in payload.get("known_users", []) if str(x).isdigit()}
         for k, v in payload.get("liquidations", {}).items():
             if str(k).isdigit() and isinstance(v, (int, float)):
                 self._liq[int(k)] = float(v)
-        log.info("Loaded subscriptions: %d news, %d liq", len(self._news), len(self._liq))
+        log.info(
+            "Loaded subscriptions: opt-in=%d opt-out=%d known=%d liq=%d (auto_all=%s)",
+            len(self._news_opt_in), len(self._news_opt_out), len(self._known_users),
+            len(self._liq), self._auto_all,
+        )

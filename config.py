@@ -63,6 +63,9 @@ class Settings:
     news_drop_interval: int = 60
     # How often (seconds) the liquidation digest is sent (recheck cadence).
     liquidation_digest_interval: int = 60
+    # When True, every user the bot has ever seen gets news auto-drops by
+    # default; /newsauto off removes them. When False, /newsauto on is required.
+    news_auto_subscribe_all: bool = True
 
     @property
     def auth_enabled(self) -> bool:
@@ -91,6 +94,7 @@ def load_settings() -> Settings:
         cache_ttl_seconds=_get_int("CACHE_TTL_SECONDS", 30),
         news_drop_interval=_get_int("NEWS_DROP_INTERVAL", 60),
         liquidation_digest_interval=_get_int("LIQUIDATION_DIGEST_INTERVAL", 60),
+        news_auto_subscribe_all=_get_int("NEWS_AUTO_SUBSCRIBE_ALL", 1) != 0,
     )
 
 
