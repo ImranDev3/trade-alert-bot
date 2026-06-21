@@ -24,6 +24,7 @@ from telegram.ext import (
 )
 
 from bot.alerts import AlertKind, AlertStore, Direction
+from bot.movers import build_top_movers_message
 from bot.news import build_news_digest
 from bot.summary import build_price_block
 from bot.util import format_price, kind_emoji, symbol_label
@@ -55,6 +56,7 @@ HELP_TEXT = (
     "/newsauto on|off — toggle auto news drops (you start subscribed)\n"
     "/liqalert &lt;USD&gt; — alert on liquidations worth ≥ this amount\n"
     "/liqalert off — stop liquidation alerts\n"
+    "/top [N] — top N gainers and losers (24h), default 10\n"
     "/help — show this message\n\n"
     "<b>Supported markets</b>\n"
     "🪙 Crypto via Binance (e.g. BTCUSDT, ETHUSDT, SOLBTC)\n"
@@ -311,6 +313,37 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers, ac
             await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     @_auth_only
+    async def top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show the top gainers and losers by 24h percent change."""
+        from data.movers import MoverError, fetch_top_movers
+
+        # /top [N] — default 10
+        try:
+            limit = int(context.args[0]) if context.args else 10
+        except ValueError:
+            await _reply(update, "Usage: <code>/top [N]</code>  (e.g. /top 10)")
+            return
+        limit = max(1, min(limit, 20))  # clamp 1..20
+
+        try:
+            gainers, losers = fetch_top_movers(limit=limit)
+        except MoverError as exc:
+            await _reply(update, f"❌ Couldn't fetch market movers: {exc}")
+            return
+        if not gainers and not losers:
+            await _reply(update, "📭 No market data right now. Try again in a minute.")
+            return
+
+        gainer_card, loser_card = build_top_movers_message(gainers, losers)
+        msg = update.effective_message
+        if msg is None:
+            return
+        # Two separate messages so the blockquote cards render as proper
+        # notification cards (Telegram stacks blockquotes oddly when nested).
+        await msg.reply_text(gainer_card, parse_mode=ParseMode.HTML)
+        await msg.reply_text(loser_card, parse_mode=ParseMode.HTML)
+
+    @_auth_only
     async def newsauto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show the current state and let the caller toggle the auto-drop."""
         arg = (context.args[0] if context.args else "").strip().lower()
@@ -408,6 +441,7 @@ def build_handlers(store: AlertStore, watchlist: WatchlistStore, subscribers, ac
         CommandHandler("news", news),
         CommandHandler("newsauto", newsauto),
         CommandHandler("liqalert", liqalert),
+        CommandHandler("top", top),
         CallbackQueryHandler(on_ack_callback, pattern=r"^ack:"),
         MessageHandler(filters.COMMAND, unknown),
     ]
